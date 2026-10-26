@@ -38,6 +38,10 @@ const MAX_XFA_CONFIG_BYTES: usize = 16 << 20;
 /// File specifications retained from a remote-Go-To action are deliberately small.
 const MAX_REMOTE_FILE_SPEC_BYTES: usize = 4096;
 const MAX_REMOTE_DESTINATION_NAME_BYTES: usize = 1024;
+/// Named destinations are read for every panel refresh. Bound the map so a hostile name tree
+/// cannot allocate without limit.
+const MAX_NAMED_DESTINATIONS: usize = 100_000;
+const MAX_NAMED_DESTINATION_BYTES: usize = 16 << 20;
 
 /// Text and geometry `DocInfo::annotations` keeps, as counted by [`retained`]. Past it the rest
 /// are not listed: real comments stay far below, many small ones sharing one long string do not.
@@ -793,10 +797,11 @@ impl<'a> Inspector<'a> {
         let page_index = page_ids.iter().copied().enumerate().map(|(index, id)| (id, index)).collect();
         let mut me = Self { doc, page_ids, page_index, named: HashMap::new(), annotation_pages: OnceCell::new() };
         let mut named = HashMap::new();
+        let mut named_bytes = 0usize;
         if let Some(tree) =
             doc.catalog().ok().and_then(|c| c.get(b"Names").ok()).and_then(|o| me.dict(o)).and_then(|n| n.get(b"Dests").ok()).and_then(|o| me.dict(o))
         {
-            me.name_tree_raw(tree, &mut HashSet::new(), 0, &mut named);
+            me.name_tree_raw(tree, &mut HashSet::new(), 0, &mut named, &mut named_bytes);
         }
         me.named = named;
         me
@@ -1094,8 +1099,15 @@ impl<'a> Inspector<'a> {
     }
 
     /// A name tree's leaves keyed by their raw key bytes (first occurrence wins).
-    fn name_tree_raw(&self, node: &'a Dictionary, seen: &mut HashSet<*const Dictionary>, depth: u32, out: &mut HashMap<Vec<u8>, &'a Object>) {
-        if depth > 32 || !seen.insert(node as *const _) {
+    fn name_tree_raw(
+        &self,
+        node: &'a Dictionary,
+        seen: &mut HashSet<*const Dictionary>,
+        depth: u32,
+        out: &mut HashMap<Vec<u8>, &'a Object>,
+        bytes: &mut usize,
+    ) {
+        if depth > 32 || !seen.insert(node as *const _) || out.len() >= MAX_NAMED_DESTINATIONS || *bytes >= MAX_NAMED_DESTINATION_BYTES {
             return;
         }
         if let Ok(Object::Array(pairs)) = node.get(b"Names").map(|o| self.resolve(o)) {
@@ -1106,14 +1118,24 @@ impl<'a> Inspector<'a> {
                         Object::Name(n) => n.clone(),
                         _ => continue,
                     };
-                    out.entry(key).or_insert(v);
+                    if (*bytes).saturating_add(key.len()) > MAX_NAMED_DESTINATION_BYTES || out.len() >= MAX_NAMED_DESTINATIONS {
+                        return;
+                    }
+                    if let std::collections::hash_map::Entry::Vacant(entry) = out.entry(key) {
+                        let len = entry.key().len();
+                        if (*bytes).saturating_add(len) > MAX_NAMED_DESTINATION_BYTES {
+                            return;
+                        }
+                        *bytes = (*bytes).saturating_add(len);
+                        entry.insert(v);
+                    }
                 }
             }
         }
         if let Ok(Object::Array(kids)) = node.get(b"Kids").map(|o| self.resolve(o)) {
             for k in kids {
                 if let Some(d) = self.dict(k) {
-                    self.name_tree_raw(d, seen, depth + 1, out);
+                    self.name_tree_raw(d, seen, depth + 1, out, bytes);
                 }
             }
         }

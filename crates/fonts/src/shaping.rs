@@ -1,4 +1,6 @@
-//! Arabic, Hebrew and Thai text shaping with the matching craft-fonts face and bounded glyph outlines.
+//! Arabic, Hebrew, Thai and Simplified Chinese text shaping with the matching craft-fonts face
+//! and bounded glyph outlines. Chinese is mapped one character at a time (it needs no joining or
+//! mark positioning); the other scripts use Harfrust.
 
 use std::sync::OnceLock;
 
@@ -28,6 +30,8 @@ pub enum ShapedScript {
     Arabic,
     Hebrew,
     Thai,
+    /// Simplified Chinese: one glyph per character, from the `Hans` craft-fonts face.
+    Cjk,
 }
 
 impl ShapedScript {
@@ -36,6 +40,7 @@ impl ShapedScript {
             Self::Arabic => crate::document_arabic_font(),
             Self::Hebrew => crate::document_hebrew_font(false),
             Self::Thai => crate::document_thai_font(),
+            Self::Cjk => crate::document_chinese_font(),
         }
     }
 }
@@ -44,10 +49,12 @@ fn face(script: ShapedScript) -> Option<&'static (FontRef<'static>, ShaperData)>
     static FACE: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
     static HEBREW: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
     static THAI: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
+    static CJK: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
     let cache = match script {
         ShapedScript::Arabic => &FACE,
         ShapedScript::Hebrew => &HEBREW,
         ShapedScript::Thai => &THAI,
+        ShapedScript::Cjk => &CJK,
     };
     cache
         .get_or_init(|| {
@@ -91,6 +98,38 @@ pub fn shape_thai(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
     shape_script(text, false, ShapedScript::Thai)
 }
 
+/// Whether the Simplified Chinese document face has a glyph for `c` (false without the face).
+pub fn cjk_has(c: char) -> bool {
+    face(ShapedScript::Cjk).is_some_and(|(font, _)| font.charmap().map(c).is_some())
+}
+
+/// Map Simplified Chinese text to one cluster per character with the `Hans` craft-fonts face.
+/// Chinese needs no joining or mark positioning, so this avoids Harfrust and keeps the original
+/// character in each cluster for `/ToUnicode` and copy/search. [`GlyphError::NoFont`] without the
+/// face; [`GlyphError::Missing`] for a character it lacks.
+pub fn shape_cjk(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
+    let (font, _) = face(ShapedScript::Cjk).ok_or(GlyphError::NoFont)?;
+    let loc = LocationRef::default();
+    let metrics = font.metrics(Size::unscaled(), loc);
+    let scale = 1.0 / metrics.units_per_em.max(1) as f64;
+    let charmap = font.charmap();
+    let advances = font.glyph_metrics(Size::unscaled(), loc);
+    let mut out = Vec::new();
+    for c in text.chars() {
+        let Some(gid) = charmap.map(c) else { return Err(GlyphError::Missing) };
+        if gid.to_u32() == 0 {
+            return Err(GlyphError::Missing);
+        }
+        let advance = f64::from(advances.advance_width(gid).unwrap_or(0.0)) * scale;
+        // A CJK glyph is at most one em wide; a wider or negative advance is a broken mapping.
+        if !advance.is_finite() || !(0.0..=2.0).contains(&advance) {
+            return Err(GlyphError::Missing);
+        }
+        out.push(ShapedCluster { script: ShapedScript::Cjk, glyphs: vec![(gid.to_u32(), [0.0, 0.0])], advance, text: c.to_string() });
+    }
+    Ok(out)
+}
+
 fn shape_script(text: &str, rtl: bool, kind: ShapedScript) -> Result<Vec<ShapedCluster>, GlyphError> {
     let (font, data) = face(kind).ok_or(GlyphError::NoFont)?;
     let shaper = data.shaper(font).build();
@@ -102,11 +141,13 @@ fn shape_script(text: &str, rtl: bool, kind: ShapedScript) -> Result<Vec<ShapedC
         ShapedScript::Arabic => script::ARABIC,
         ShapedScript::Hebrew => script::HEBREW,
         ShapedScript::Thai => script::THAI,
+        // Chinese is mapped directly in `shape_cjk`; this path is never asked to shape it.
+        ShapedScript::Cjk => return Err(GlyphError::Missing),
     });
     // Preserve the historical Arabic per-character mapping; Hebrew and Thai marks stay with their base.
     buffer.set_cluster_level(match kind {
         ShapedScript::Arabic => BufferClusterLevel::Characters,
-        ShapedScript::Hebrew | ShapedScript::Thai => BufferClusterLevel::MonotoneGraphemes,
+        ShapedScript::Hebrew | ShapedScript::Thai | ShapedScript::Cjk => BufferClusterLevel::MonotoneGraphemes,
     });
     let shaped = shaper.shape(buffer, ShapeOptions::new());
     // Clusters are byte offsets into `text`; a cluster shows the characters up to the next one.
@@ -297,5 +338,37 @@ mod hebrew_tests {
         assert!(hebrew_has('א') && hebrew_has('\u{05B8}') && !hebrew_has('日'));
         assert_eq!(shape_hebrew("日", true), Err(GlyphError::Missing));
         assert!(shape_hebrew("", true).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cjk_tests {
+    use super::*;
+
+    #[test]
+    fn chinese_is_mapped_one_character_at_a_time() {
+        if crate::document_chinese_font().is_none() {
+            eprintln!("skipping the Chinese shaping checks: built without a craft-fonts Hans face (set CRAFT_FONTS_DIR)");
+            assert_eq!(shape_cjk("中"), Err(GlyphError::NoFont));
+            assert!(!cjk_has('中'));
+            return;
+        }
+        for text in ["中文", "你好，世界！", "简体字 123", ""] {
+            let clusters = shape_cjk(text).unwrap();
+            assert_eq!(clusters.iter().map(|c| c.text.as_str()).collect::<String>(), text);
+            for c in clusters {
+                assert_eq!(c.script, ShapedScript::Cjk);
+                assert!(c.advance.is_finite() && (0.0..=2.0).contains(&c.advance), "{c:?}");
+                assert_eq!(c.glyphs.len(), 1);
+                for (id, pos) in &c.glyphs {
+                    assert_eq!(pos, &[0.0, 0.0]);
+                    let glyph = shaped_glyph(c.script, *id).unwrap();
+                    assert!((glyph.width - c.advance).abs() < 0.0001, "{glyph:?} {c:?}");
+                }
+            }
+        }
+        assert!(cjk_has('中') && cjk_has('你') && !cjk_has('\u{1F600}'));
+        assert_eq!(shape_cjk("\u{1F600}"), Err(GlyphError::Missing));
+        assert_eq!(shaped_glyph(ShapedScript::Cjk, u32::MAX).map(|_| ()), Err(GlyphError::Missing));
     }
 }

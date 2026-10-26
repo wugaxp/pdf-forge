@@ -1,5 +1,16 @@
 use super::*;
 
+/// R5/R6 permissions live in the encrypted `/Perms` block; a missing one must not fall back to
+/// the editable plaintext `/P`.
+#[test]
+fn missing_r5_r6_perms_grants_no_user_permissions() {
+    let dict = EncryptDict { r: 6, v: 5, p: -1, perms: Vec::new(), ..Default::default() };
+    let handler = SecurityHandler::new(dict, vec![0; 32], Auth::User, None);
+    let permissions = handler.permissions();
+    assert!(!permissions.owner);
+    assert!(!permissions.print() && !permissions.copy() && !permissions.modify() && !permissions.annotate());
+}
+
 fn hex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
 }
@@ -250,10 +261,14 @@ fn perms_limits_what_an_edited_p_grants() {
     assert!(open(&d, "owner pw").modify(), "owners ignore /P");
     d.p = -3904; // a stricter /P still applies
     assert!(!open(&d, "user pw").print());
-    // No /Perms, or one that does not decrypt to an `adb` block: /P as before.
+    // No /Perms, or one that does not decrypt to an `adb` block: R5/R6 carry the user's
+    // permissions in the authenticated block, so a missing or forged one grants none. The
+    // plaintext /P is editable and must not be trusted.
     for perms in [Vec::new(), vec![0; 16], made.dict().perms[..15].to_vec()] {
         let d = EncryptDict { p: -4, perms, ..made.dict().clone() };
-        assert!(open(&d, "user pw").modify());
+        let p = open(&d, "user pw");
+        assert!(!p.modify() && !p.print() && !p.copy() && !p.annotate());
+        assert!(open(&d, "owner pw").modify(), "owners ignore the damaged /Perms");
     }
     // R2 to R4 have no /Perms: /P is part of their file key, so an edited /P does not open.
     let d = EncryptDict { p: -4, ..new(Algorithm::Aes128, "user pw", "owner pw", 0b0100).dict().clone() };

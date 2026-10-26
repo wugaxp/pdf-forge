@@ -12,11 +12,12 @@ use crate::page_pointer::PagePointer;
 use crate::theme::Tokens;
 use crate::widgets;
 
-/// The colour of the warning under text the standard fonts can't draw.
+/// The colour of the warning under text the PDF text fonts can't draw.
 pub(crate) const UNDRAWABLE: Color32 = Color32::from_rgb(0xD7, 0x37, 0x3F);
 
 /// The first character of a draft that can't be drawn, as the engine decides it (it refuses
-/// such text, #125): outside the standard fonts and not shaped with the Arabic face.
+/// such text, #125): outside the standard fonts and not drawn with a craft-fonts script face
+/// (Chinese, Arabic, Hebrew or Thai).
 pub(crate) fn undrawable(d: &TextDraft, memo: &UndrawableMemo) -> Option<char> {
     // Checked as `finish` will commit it: without trailing whitespace.
     let t = AddedText { text: d.text.trim_end().to_string(), rect: d.rect, ..d.style.clone() };
@@ -94,7 +95,7 @@ impl ContentView {
     pub(crate) fn finish_draft(&mut self, added: &[Added]) -> Option<Edit> {
         self.draft.take().and_then(|d| finish(self, d, added))
     }
-    /// The draft's first character the standard fonts can't draw. Such a draft is kept open, and
+    /// The draft's first character the PDF text fonts can't draw. Such a draft is kept open, and
     /// counts as unsaved work, until it is corrected or discarded.
     pub(crate) fn blocked(&self) -> Option<char> {
         self.draft.as_ref().and_then(|d| undrawable(d, &self.undrawable))
@@ -630,7 +631,8 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
                 commit = done || resp.lost_focus() && !on_buttons && !view.objects.hold_editor;
             });
-            // Page text is drawn with the standard fonts; anything else would be saved as `?` (#125).
+            // Page text is drawn with the standard fonts or a craft-fonts script face; anything
+            // else would be saved as `?` (#125).
             undrawable = self::undrawable(t, memo);
             if let Some(c) = undrawable {
                 ui.label(egui::RichText::new(undrawable_message(c)).small().color(UNDRAWABLE));

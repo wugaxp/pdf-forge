@@ -411,19 +411,24 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
     // The original image and form XObjects the rewrite drops or replaces, on any page.
     let mut doomed_xobjects: Vec<ObjRef> = Vec::new();
     let mut retired_properties = Vec::new();
-    let widget_owner: Vec<(ObjRef, ObjRef)> =
+    let widget_owner: HashMap<ObjRef, ObjRef> =
         pdfcraft_forms::fields(doc).into_iter().flat_map(|f| f.widgets.iter().map(|w| (w.obj, f.obj)).collect::<Vec<_>>()).collect();
+    let field_objects: HashSet<ObjRef> = pdfcraft_forms::fields(doc).into_iter().map(|f| f.obj).collect();
     let listed_before = listed_annotations(doc);
     let mut removed_everywhere: HashSet<ObjRef> = HashSet::new();
+    // Page objects only; their dictionaries are read once per page below. Rebuilding the page
+    // tree inside the loop made redacting many pages O(P²).
+    let page_objects: Vec<ObjRef> = pdfcraft_model::pages(doc).iter().map(|p| p.obj).collect();
 
     for &(pi, page_marks) in &groups {
-        let page = pdfcraft_model::pages(doc).swap_remove(pi);
+        let page_obj = page_objects.get(pi).copied().ok_or(RedactError::Unreadable(pi + 1))?;
+        let page_dict = doc.get(page_obj).as_dict().cloned().ok_or(RedactError::Unreadable(pi + 1))?;
         let rects: Vec<[f64; 4]> = page_marks.iter().flat_map(|m| m.rects.iter().copied()).collect();
 
         // 1. Content.
         let mut budget = pdfcraft_cos::DecodeBudget::page();
-        let (list, data) = page_streams_within(doc, &page.dict, pi, &mut budget)?;
-        let resources = page.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
+        let (list, data) = page_streams_within(doc, &page_dict, pi, &mut budget)?;
+        let resources = page_dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
         let out = {
             let mut scope = Scope::new(&rects, Mode::Apply, &mut report, budget);
             process(doc, &mut scope, &data, &resources, pdfcraft_content::Matrix::IDENTITY)
@@ -486,31 +491,31 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
             let (_, cleaned_data) = page_streams(
                 doc,
                 &{
-                    let mut cleaned_page = page.dict.clone();
+                    let mut cleaned_page = page_dict.clone();
                     cleaned_page.set(b"Contents".to_vec(), Object::Array(new_list.clone()));
                     cleaned_page
                 },
                 pi,
             )?;
             retired_properties.extend(interp::prune_properties(doc, &mut res, &cleaned_data)?);
-            doc.update_dict(page.obj, |d| {
+            doc.update_dict(page_obj, |d| {
                 d.set(b"Contents".to_vec(), Object::Array(new_list));
                 d.set(b"Resources".to_vec(), Object::Dict(res));
             })?;
             // Tags must not keep what the page no longer shows.
-            let after = doc.get(page.obj).as_dict().cloned().unwrap_or_default();
+            let after = doc.get(page_obj).as_dict().cloned().unwrap_or_default();
             let (_, new_data) = page_streams(doc, &after, pi)?;
             let (changed_ids, empty_ids) =
                 tags::touched(doc, &resources, pdfcraft_content::Pieces::join(&data).data(), pdfcraft_content::Pieces::join(&new_data).data());
-            report.tags += tags::clean(doc, page.obj, None, &changed_ids, &empty_ids)?;
+            report.tags += tags::clean(doc, page_obj, None, &changed_ids, &empty_ids)?;
         }
 
         for (old, new, changed, empty) in out.tag_changes {
-            report.tags += tags::clean(doc, page.obj, Some((old, new)), &changed, &empty)?;
+            report.tags += tags::clean(doc, page_obj, Some((old, new)), &changed, &empty)?;
         }
 
         // 2. Annotations: the marks, and whatever lies under them (with their pop-ups).
-        let annots = annots_of(doc, &doc.get(page.obj).as_dict().cloned().unwrap_or_default());
+        let annots = annots_of(doc, &doc.get(page_obj).as_dict().cloned().unwrap_or_default());
         let mut removed: Vec<ObjRef> = Vec::new();
         for a in &annots {
             let Some(r) = a.as_ref() else { continue };
@@ -529,7 +534,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
             if rect_of(doc, d.get(b"Rect")).is_some_and(|b| rects.iter().any(|x| pdfcraft_content::overlaps(*x, b, 0.0))) {
                 removed.push(r);
                 if subtype == b"Widget" {
-                    if let Some((_, field)) = widget_owner.iter().find(|(w, _)| *w == r)
+                    if let Some(field) = widget_owner.get(&r)
                         && !doomed_fields.contains(field)
                     {
                         doomed_fields.push(*field);
@@ -585,7 +590,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
                 !obj.as_dict().and_then(|d| d.get(b"Parent")).and_then(Object::as_ref).is_some_and(|p| removed.contains(&p))
             })
             .collect();
-        doc.update_dict(page.obj, |d| {
+        doc.update_dict(page_obj, |d| {
             if kept.is_empty() {
                 d.remove(b"Annots");
             } else {
@@ -642,7 +647,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
 
     // 3. Form fields with a widget under a mark (all their widgets go).
     for field in &doomed_fields {
-        if pdfcraft_forms::fields(doc).iter().any(|f| f.obj == *field) {
+        if field_objects.contains(field) {
             pdfcraft_forms::delete_field_object(doc, *field)?;
             report.fields += 1;
         }
@@ -678,8 +683,9 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
 
     // 5. Verify: nothing readable may remain under a region.
     let mut residue = 0;
+    let verification_pages = pdfcraft_model::pages(doc);
     for &(pi, page_marks) in &groups {
-        let page = pdfcraft_model::pages(doc).swap_remove(pi);
+        let page = verification_pages.get(pi).ok_or(RedactError::Unreadable(pi + 1))?;
         let rects: Vec<[f64; 4]> = page_marks.iter().flat_map(|m| m.rects.iter().copied()).collect();
         let mut budget = pdfcraft_cos::DecodeBudget::page();
         let (list, data) = page_streams_within(doc, &page.dict, pi, &mut budget)?;

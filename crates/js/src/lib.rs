@@ -1511,9 +1511,19 @@ const MAX_BRACKET_DEPTH: usize = 64;
 const MAX_PREFIX_RUN: usize = 64;
 /// Most `?` (conditional expressions nest without brackets).
 const MAX_CONDITIONALS: usize = 4096;
-/// The script thread's stack.
+/// Stack reserved for one script worker. Boa's own recursion and operand-stack limits bound the
+/// script; 1 GiB reserved per script was excessive and could fail to spawn on a busy machine.
 #[cfg(not(target_arch = "wasm32"))]
-const SCRIPT_STACK: usize = 1 << 30;
+const SCRIPT_STACK: usize = 128 << 20;
+/// A form script that has not returned after this long is abandoned and reported. Boa cannot be
+/// cancelled safely, so its loop/recursion limits still stop the worker shortly afterwards.
+const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A timed-out worker cannot be killed. Cap how many may be abandoned at once so a document
+/// that runs several runaway scripts cannot keep spawning 128 MiB stacks.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_ABANDONED_SCRIPTS: usize = 4;
+#[cfg(not(target_arch = "wasm32"))]
+static ABANDONED_SCRIPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Why `source` is refused, if it is: too long, or nested deeper than any form needs. Strings
 /// and comments are skipped; brackets in regular expressions and templates count, which only
@@ -1601,7 +1611,7 @@ pub fn run_shared(script: &str, event: &Event, doc: &DocInfo, fields: Arc<Vec<Fi
     // A document script too long or too deeply nested to run safely is skipped and reported,
     // as one that throws is; the others and the script still run (#3940).
     let mut skipped = Vec::new();
-    let kept: Vec<(usize, &str)> = doc_scripts
+    let kept: Vec<(usize, String)> = doc_scripts
         .iter()
         .enumerate()
         .filter_map(|(i, d)| match refuse(d) {
@@ -1609,22 +1619,46 @@ pub fn run_shared(script: &str, event: &Event, doc: &DocInfo, fields: Arc<Vec<Fi
                 skipped.push((i, why));
                 None
             }
-            None => Some((i, d.as_str())),
+            None => Some((i, d.clone())),
         })
         .collect();
     let (kept, skipped) = (&kept, &skipped);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::thread::scope(|scope| {
-            let spawned = std::thread::Builder::new()
-                .name("pdfcraft-js".into())
-                .stack_size(SCRIPT_STACK)
-                .spawn_scoped(scope, || run_here(script, event, doc, fields, kept, skipped, limits));
-            match spawned {
-                Ok(thread) => thread.join().unwrap_or_else(|_| failed("the script stopped with an internal error".into())),
-                Err(e) => failed(format!("the script engine could not start: {e}")),
+        // A script that runs away must not block the editor forever. The worker is abandoned on
+        // timeout (Boa cannot be cancelled safely), but its loop/recursion limits still stop it;
+        // the caller gets an error at once instead of a frozen UI.
+        if ABANDONED_SCRIPTS.load(std::sync::atomic::Ordering::Acquire) >= MAX_ABANDONED_SCRIPTS {
+            return failed("too many scripts are still running; close the document and try again".into());
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let owned_script = script.to_string();
+        let owned_event = event.clone();
+        let owned_doc = doc.clone();
+        let kept = kept.clone();
+        let skipped = skipped.clone();
+        let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_abandoned = abandoned.clone();
+        let spawned = std::thread::Builder::new().name("pdfcraft-js".into()).stack_size(SCRIPT_STACK).spawn(move || {
+            let outcome = run_here(&owned_script, &owned_event, &owned_doc, fields, &kept, &skipped, limits);
+            if worker_abandoned.load(std::sync::atomic::Ordering::Acquire) {
+                ABANDONED_SCRIPTS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             }
-        })
+            let _ = tx.send(outcome);
+        });
+        if let Err(e) = spawned {
+            return failed(format!("the script engine could not start: {e}"));
+        }
+        match rx.recv_timeout(SCRIPT_TIMEOUT) {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !abandoned.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    ABANDONED_SCRIPTS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+                failed(format!("the script ran longer than {:.1} s and was abandoned", SCRIPT_TIMEOUT.as_secs_f64()))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => failed("the script stopped with an internal error".into()),
+        }
     }
     #[cfg(target_arch = "wasm32")]
     run_here(script, event, doc, fields, kept, skipped, limits)
@@ -1674,7 +1708,7 @@ fn run_here(
     event: &Event,
     doc: &DocInfo,
     fields: Arc<Vec<FieldState>>,
-    doc_scripts: &[(usize, &str)],
+    doc_scripts: &[(usize, String)],
     skipped: &[(usize, String)],
     limits: Limits,
 ) -> Outcome {
@@ -1687,6 +1721,9 @@ fn run_here(
     };
     ctx.runtime_limits_mut().set_loop_iteration_limit(limits.loop_iterations);
     ctx.runtime_limits_mut().set_recursion_limit(limits.recursion);
+    // Operand-stack entries, not bytes: keep a hostile expression from growing Boa's VM stack
+    // without bound even when recursion itself is shallow.
+    ctx.runtime_limits_mut().set_stack_size_limit(64 * 1024);
     ctx.insert_data(RefCell::new(Host {
         fields,
         changed: BTreeSet::new(),
@@ -1706,9 +1743,9 @@ fn run_here(
         // One document script that throws (calling a method PdfCraft lacks, say) must not keep
         // every field script in the form from running: what it defined before the error, and
         // the other scripts, stay available (#3940).
-        for &(i, d) in doc_scripts {
+        for (i, d) in doc_scripts {
             if let Err(e) = ctx.eval(Source::from_bytes(d)) {
-                doc_errors.push((i, doc_error(i, &e)));
+                doc_errors.push((*i, doc_error(*i, &e)));
             }
         }
         let r = ctx.eval(Source::from_bytes(script))?;

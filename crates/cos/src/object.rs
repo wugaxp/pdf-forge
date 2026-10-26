@@ -210,8 +210,10 @@ pub struct Stream {
     pub raw: Bytes,
 }
 
-/// Upper bound for a single decoded stream (decompression-bomb defence).
-pub const MAX_DECODED: usize = 1 << 30;
+/// Default bound for one decoded stream. It is deliberately below 1 GiB: a small compressed
+/// stream can otherwise expand to a process-killing allocation. Callers that know a larger
+/// stream is legitimate can pass an explicit budget.
+pub const MAX_DECODED: usize = 512 << 20;
 
 impl Stream {
     /// A new stream from already-encoded bytes (`/Length` is set at write time).

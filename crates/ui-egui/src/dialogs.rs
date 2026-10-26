@@ -1303,9 +1303,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     2 => crate::credits::models_ui(ui),
                     _ => {
                         ui.horizontal(|ui| {
-                            widgets::artcraft_mark(ui, 40.0);
+                            widgets::pdf_forge_mark(ui, 40.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("PdfCraft").font(theme::semibold(20.0)));
+                                ui.label(egui::RichText::new("PDF Forge").font(theme::semibold(20.0)));
                                 ui.label(crate::i18n::fmt(tl!("Version {v}"), &[("v", &pdfcraft_engine::build_info::version())]));
                             });
                         });
@@ -1320,8 +1320,8 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                         );
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(tl!("Part of")).color(t.text_muted));
-                            widgets::artcraft_logo(ui, 16.0);
+                            ui.label(egui::RichText::new(tl!("Fork of")).color(t.text_muted));
+                            widgets::pdf_forge_logo(ui, 28.0);
                         });
                         ui.add_space(6.0);
                         if let Some(cmd) = widgets::community_links(ui) {
@@ -1448,7 +1448,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
         Some(Dialog::RedactPages) => app.redact_pages(),
         Some(Dialog::RedactSearch) => {
             let n = app.redact_search();
-            app.redact_search.found = Some(n);
+            if app.redact_search_job.is_none() {
+                app.redact_search.found = Some(n);
+            }
         }
         Some(Dialog::RemoveHidden) => {
             let which: Vec<pdfcraft_engine::Hidden> = app.hidden_draft.found.iter().filter(|f| f.2 && f.1 > 0).map(|f| f.0).collect();

@@ -16,7 +16,13 @@ impl Pixels {
         if allocation_probe::refuse(width, height) {
             return None;
         }
-        Some(Self(vec![0; width.checked_mul(height)?]))
+        let len = width.checked_mul(height)?;
+        // `vec![0; len]` aborts the process when the allocator refuses; a hostile page must
+        // become an error the caller can report instead.
+        let mut words = Vec::new();
+        words.try_reserve_exact(len).ok()?;
+        words.resize(len, 0);
+        Some(Self(words))
     }
 
     /// The bytes, for the rasterizer to write into.

@@ -331,7 +331,7 @@ fn a_picture_on_the_clipboard_is_pasted_onto_the_page() {
     assert_eq!(images(&h), 2, "Prepare Form pastes fields");
 }
 
-/// #125: text the standard fonts can't draw stays in the editor with a warning instead of being
+/// #125: text no PDF text font can draw stays in the editor with a warning instead of being
 /// written to the page as `?` (or lost).
 #[test]
 fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
@@ -341,9 +341,9 @@ fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     h.run_steps(2);
     let p = at(&h, 40.0, 300.0);
     click(&mut h, p);
-    h.event(egui::Event::Text("Hello 世界".into()));
+    h.event(egui::Event::Text("Hello の".into()));
     h.run_steps(2);
-    h.get_by_label_contains("can't draw “世” (U+4E16)");
+    h.get_by_label_contains("can't draw “の” (U+306E)");
     if let Ok(dir) = std::env::var("PDFCRAFT_SHOTS") {
         h.render().unwrap().save(format!("{dir}/undrawable-text.png")).unwrap();
     }
@@ -351,12 +351,12 @@ fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     h.run_steps(3);
     assert!(texts(&h).is_empty(), "nothing was written to the page");
     let draft = h.state().views[0].content.draft.as_ref().map(|d| d.text.clone());
-    assert_eq!(draft.as_deref(), Some("Hello 世界"), "the typed text is kept");
+    assert_eq!(draft.as_deref(), Some("Hello の"), "the typed text is kept");
     // A click elsewhere on the page doesn't finish it, or replace it with a new box.
     let elsewhere = at(&h, 40.0, 150.0);
     click(&mut h, elsewhere);
     let draft = h.state().views[0].content.draft.as_ref().map(|d| d.text.clone());
-    assert_eq!(draft.as_deref(), Some("Hello 世界"), "clicking elsewhere keeps the typed text");
+    assert_eq!(draft.as_deref(), Some("Hello の"), "clicking elsewhere keeps the typed text");
     assert!(texts(&h).is_empty());
     // Once the text can be drawn, Done adds it (Done took the focus, so edit the draft directly).
     if let Some(d) = h.state_mut().views[0].content.draft.as_mut() {
@@ -366,6 +366,28 @@ fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     h.get_by_label("Done adding text").click();
     h.run_steps(3);
     assert_eq!(texts(&h), ["Hello world"]);
+}
+
+/// Chinese typed into Add Text is committed, not blocked: the engine writes it with a generated
+/// Type 3 font from the `Hans` craft-fonts face.
+#[test]
+fn chinese_text_is_added_from_the_editor() {
+    if pdfcraft_fonts::document_chinese_font().is_none() {
+        eprintln!("skipping the Chinese Add Text UI check: built without a craft-fonts Hans face (set CRAFT_FONTS_DIR)");
+        return;
+    }
+    let _gpu = gpu();
+    let mut h = harness();
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(2);
+    let p = at(&h, 40.0, 300.0);
+    click(&mut h, p);
+    h.event(egui::Event::Text("Hello 世界".into()));
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("can't draw").is_none(), "Chinese is drawable now");
+    h.get_by_label("Done adding text").click();
+    h.run_steps(4);
+    assert_eq!(texts(&h), ["Hello 世界"]);
 }
 
 /// Text kept because it can't be drawn goes with its page when the page is deleted, so nothing

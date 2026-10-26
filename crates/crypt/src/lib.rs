@@ -247,9 +247,10 @@ impl SecurityHandler {
 
     /// For R5/R6, `/P` is stored in clear and again in `/Perms`, encrypted with the file key
     /// (Algorithm 13). Where the two differ, a permission counts only when both grant it, so an
-    /// edited `/P` grants nothing extra. Without a readable `/Perms`, `/P` applies as before.
+    /// edited `/P` grants nothing extra. A missing or malformed `/Perms` grants no user
+    /// permissions: fail closed, because `/P` is plaintext and editable.
     pub fn permissions(&self) -> Permissions {
-        let bits = self.perms_p().map_or(self.dict.p, |p| self.dict.p & p);
+        let bits = if matches!(self.dict.r, 5 | 6) { self.perms_p().map_or(0, |p| self.dict.p & p) } else { self.dict.p };
         Permissions { bits, owner: self.auth == Auth::Owner }
     }
 

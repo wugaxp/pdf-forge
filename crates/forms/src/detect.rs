@@ -6,7 +6,7 @@
 //! the shapes from a page's content, [`raster::shapes`] from a picture of the page (a scan).
 
 use pdfcraft_content::{Matrix, Pieces};
-use pdfcraft_cos::{Document, Object};
+use pdfcraft_cos::{DecodeBudget, Document, Object};
 
 pub mod raster;
 
@@ -137,9 +137,12 @@ pub fn page_shapes(doc: &Document, page: usize) -> Shapes {
         None => Vec::new(),
     };
     let mut pieces = Vec::new();
+    let mut budget = DecodeBudget::page();
     for o in list {
-        if let Object::Stream(s) = &*doc.resolve(&o) {
-            pieces.push(s.decoded().unwrap_or_default());
+        if let Object::Stream(s) = &*doc.resolve(&o)
+            && let Ok(data) = budget.decode(s)
+        {
+            pieces.push(data);
         }
     }
     let mut ctm = Matrix::IDENTITY;

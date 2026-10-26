@@ -9,6 +9,17 @@ use pdfcraft_engine::compare::{Comparison, Kind};
 use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, RightPanel, widgets};
 
+type CompareOutput = Result<(Comparison, Vec<(usize, [f64; 4])>), String>;
+
+/// A comparison running off the UI thread. Comparing two large files reads every word and
+/// rasterizes every page; doing that while painting froze the window.
+pub(crate) struct CompareJob {
+    rx: std::sync::mpsc::Receiver<CompareOutput>,
+    old: DocId,
+    new: DocId,
+    index: usize,
+}
+
 /// The last comparison.
 pub struct CompareState {
     pub old: DocId,
@@ -187,19 +198,68 @@ impl PdfCraftApp {
         }
     }
 
-    /// Compare the chosen older document with the active one and show the differences.
+    /// Compare the chosen older document with the active one and show the differences. The work
+    /// runs on a worker thread; [`Self::poll_compare`] installs the result.
     pub fn run_compare(&mut self) {
         let Some((i, new)) = self.active_ids() else { return };
         let Some(old) = self.compare_old else { return };
-        match self.session.compare(old, new) {
-            Ok(result) => {
-                let visual = self.session.compare_visual(old, new, 72.0).unwrap_or_default();
+        if self.compare_job.is_some() {
+            self.notify_tr("A comparison is already running");
+            return;
+        }
+        let (Some(a), Some(b)) = (self.session.get(old), self.session.get(new)) else { return };
+        let (old_bytes, old_password) = (a.bytes.clone(), a.password.clone());
+        let (new_bytes, new_password) = (b.bytes.clone(), b.password.clone());
+        let (old_bytes_len, new_bytes_len) = (old_bytes.len(), new_bytes.len());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work = move || {
+            let run = || -> CompareOutput {
+                let mut session = pdfcraft_engine::Session::new();
+                let old_id = session.open("old", None, old_bytes, old_password.as_deref()).map_err(|e| e.to_string())?;
+                let new_id = session.open("new", None, new_bytes, new_password.as_deref()).map_err(|e| e.to_string())?;
+                let result = session.compare(old_id, new_id).map_err(|e| e.to_string())?;
+                let visual = session.compare_visual(old_id, new_id, 72.0).unwrap_or_default();
+                Ok((result, visual))
+            };
+            let _ = tx.send(run());
+        };
+        // Small files (and tests) finish before the first repaint; only a large comparison is
+        // worth a thread and a progress message.
+        let inline = cfg!(target_arch = "wasm32") || self.run_inline || old_bytes_len + new_bytes_len < (1 << 20);
+        if inline {
+            work();
+        } else if std::thread::Builder::new().name("pdfcraft-compare".into()).spawn(work).is_err() {
+            self.notify_tr("Could not start the comparison");
+            return;
+        } else {
+            self.notify_tr("Comparing…");
+        }
+        self.compare_job = Some(CompareJob { rx, old, new, index: i });
+        self.poll_compare();
+    }
+
+    /// Install a finished comparison, if one is ready.
+    pub(crate) fn poll_compare(&mut self) {
+        let Some(job) = self.compare_job.as_ref() else { return };
+        let result = match job.rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the comparison worker stopped".to_string()),
+        };
+        let Some(job) = self.compare_job.take() else { return };
+        match result {
+            Ok((result, visual)) => {
                 let n = result.changes.len();
                 // Side by side when the old version is open in a tab and the window has the room.
-                let side_by_side = self.views.iter().any(|v| v.id == old) && self.ctx.as_ref().is_none_or(|c| c.content_rect().width() >= 1000.0);
-                self.compare = Some(crate::compare_ui::CompareState {
-                    old,
-                    new,
+                let side_by_side = self.views.iter().any(|v| v.id == job.old) && self.ctx.as_ref().is_none_or(|c| c.content_rect().width() >= 1000.0);
+                self.compare = Some(CompareState {
+                    old: job.old,
+                    new: job.new,
                     result,
                     visual,
                     selected: None,
@@ -209,7 +269,7 @@ impl PdfCraftApp {
                     show_text: true,
                     show_visual: true,
                 });
-                self.shade_compare(i);
+                self.shade_compare(job.index);
                 self.right = Some(RightPanel::Compare);
                 self.notify(if n == 0 {
                     tl!("The text is the same").to_string()
@@ -219,7 +279,7 @@ impl PdfCraftApp {
                     crate::i18n::fmt(tl!("{n} differences found"), &[("n", &n.to_string())])
                 });
             }
-            Err(e) => self.notify_error(e),
+            Err(e) => self.notify(e),
         }
     }
 

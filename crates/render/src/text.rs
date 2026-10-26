@@ -397,7 +397,14 @@ struct TextDevice {
     excluded_depth: Option<usize>,
     actual_filtered: bool,
     partial_replacement: bool,
+    /// A glyph past [`MAX_GLYPHS`] was dropped; extraction refuses the page instead of growing
+    /// unbounded from hostile content.
+    overflow: bool,
 }
+
+/// Most glyphs one page's text extraction may keep. A glyph is a heap-backed `String` plus
+/// geometry; without a cap, a small compressed content stream can allocate gigabytes.
+const MAX_GLYPHS: usize = 1_000_000;
 
 /// An `/ActualText` replacement: the glyph standing for it in `TextDevice::glyphs` (none for an
 /// empty replacement), its text, and the text and box of each replaced glyph that has Unicode of
@@ -479,6 +486,21 @@ impl TextDevice {
             excluded_depth: None,
             actual_filtered: false,
             partial_replacement: false,
+            overflow: false,
+        }
+    }
+
+    fn add_glyph(&mut self, glyph: Drawn) {
+        if self.glyphs.len() < MAX_GLYPHS {
+            self.glyphs.push(glyph);
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    fn add_glyphs(&mut self, glyphs: impl IntoIterator<Item = Drawn>) {
+        for glyph in glyphs {
+            self.add_glyph(glyph);
         }
     }
 
@@ -499,15 +521,15 @@ impl TextDevice {
             return;
         }
         let Some(glyph) = merge(&drawn, text.clone()) else {
-            self.glyphs.extend(drawn.into_iter().filter(|d| !d.2.text.chars().all(char::is_control)));
+            self.add_glyphs(drawn.into_iter().filter(|d| !d.2.text.chars().all(char::is_control)));
             return;
         };
         let originals = drawn.iter().filter(|d| !d.2.text.chars().all(char::is_control)).map(|d| (d.2.text.clone(), d.2.rect)).collect();
         let at = if text.chars().all(char::is_control) {
             None
         } else {
-            self.glyphs.push(glyph);
-            Some(self.glyphs.len() - 1)
+            self.add_glyph(glyph);
+            Some(self.glyphs.len().saturating_sub(1))
         };
         self.replaced.push(Replaced { at, text, originals });
     }
@@ -577,7 +599,7 @@ impl TextDevice {
         let mut i = 0;
         while let Some(g) = glyphs.get(i) {
             let Some((range, k)) = redraws.next_if(|(range, _)| range.start == i) else {
-                self.glyphs.push(g.clone());
+                self.add_glyph(g.clone());
                 i += 1;
                 continue;
             };
@@ -586,7 +608,7 @@ impl TextDevice {
             // Each redraw takes its own copy of the replacement, and one long replacement can
             // have many redraws: past the budget a redraw keeps its glyphs, as past the work budget.
             let Some(left) = text_left.checked_sub(replacement.len()) else {
-                self.glyphs.extend_from_slice(run);
+                self.add_glyphs(run.iter().cloned());
                 i = range.end.max(i + 1);
                 continue;
             };
@@ -596,8 +618,8 @@ impl TextDevice {
             REDRAW_TEXT_BYTES.with(|c| c.set(c.get() + text.len()));
             if !text.chars().all(char::is_control) {
                 match merge(run, text) {
-                    Some(glyph) => self.glyphs.push(glyph),
-                    None => self.glyphs.extend_from_slice(run),
+                    Some(glyph) => self.add_glyph(glyph),
+                    None => self.add_glyphs(run.iter().cloned()),
                 }
             }
             i = range.end.max(i + 1);
@@ -696,8 +718,14 @@ impl<'a> Device<'a> for TextDevice {
             direction: direction.map(|d| d as f32),
         };
         match &mut self.actual {
-            Some((_, _, drawn)) => drawn.push((dir, direction, glyph)),
-            None => self.glyphs.push((dir, direction, glyph)),
+            Some((_, _, drawn)) => {
+                if drawn.len() < MAX_GLYPHS {
+                    drawn.push((dir, direction, glyph));
+                } else {
+                    self.overflow = true;
+                }
+            }
+            None => self.add_glyph((dir, direction, glyph)),
         }
     }
     fn draw_image(&mut self, _: Image<'a, '_>, _: Affine) {}
@@ -746,6 +774,9 @@ pub(crate) fn extract_page_filtered(pdf: &Pdf, page: usize, settings: &Interpret
     interpret_page(p, &mut ctx, &mut dev);
     // A replacement the content never closed ends with the page.
     dev.finish();
+    if dev.overflow {
+        return Err(format!("the page has more than {MAX_GLYPHS} glyphs; its text is too complex to extract safely"));
+    }
     if dev.partial_replacement {
         return Err("a replacement text span mixes included and excluded content; disable the exclusions to count this page".into());
     }

@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 use pdfcraft_fonts::{
-    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, literal, shape_arabic, shape_hebrew, shape_thai, shaped_glyph, win_ansi,
+    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, cjk_has, literal, shape_arabic, shape_cjk, shape_hebrew, shape_thai, shaped_glyph,
+    win_ansi,
 };
 use unicode_bidi::{Level, ParagraphBidiInfo};
 
@@ -266,9 +267,10 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
         // Arabic or Hebrew: laid out with the bidirectional algorithm and shaped.
         let rtl_script = para.chars().any(|c| is_arabic(c) || is_hebrew(c));
         let thai = para.chars().any(is_thai);
-        if thai
+        let cjk = para.chars().any(is_cjk);
+        if (thai || cjk)
             && !rtl_script
-            && let Ok(lines) = thai_lines(t, para, width)
+            && let Ok(lines) = cluster_lines(t, para, width)
         {
             out.extend(lines.into_iter().map(|line| (line, false)));
             continue;
@@ -299,17 +301,19 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
     out
 }
 
-/// Thai wrapping at shaped cluster boundaries never detaches a tone/vowel mark from its base.
+/// Thai and Chinese wrapping at shaped cluster boundaries: never detaches a Thai tone/vowel mark
+/// from its base, and lets Chinese break between any two characters. Latin runs stay whole words.
 /// This is glyph-safe wrapping, not dictionary-based Thai word segmentation.
-fn thai_lines(t: &AddedText, para: &str, width: f64) -> Result<Vec<String>, EditError> {
+fn cluster_lines(t: &AddedText, para: &str, width: f64) -> Result<Vec<String>, EditError> {
     let (pieces, _) = shaped_layout(t, para, false)?;
     let mut atoms = Vec::new();
     for piece in pieces {
         match piece {
             Piece::Shaped(clusters) => atoms.extend(clusters.into_iter().map(|c| (c.text, c.advance * t.size + t.char_spacing))),
-            Piece::Latin(s) => atoms.extend(s.chars().map(|c| {
-                let text = c.to_string();
-                let w = latin_width(t, &text);
+            // Keep Latin words together; the trailing space belongs to the atom before the next.
+            Piece::Latin(s) => atoms.extend(s.split_inclusive(' ').map(|word| {
+                let text = word.to_string();
+                let w = latin_width(t, word);
                 (text, w)
             })),
         }
@@ -332,6 +336,31 @@ fn is_thai(c: char) -> bool {
     matches!(u32::from(c), 0x0E00..=0x0E7F)
 }
 
+/// Chinese characters and punctuation that the `Hans` craft-fonts face draws: Han ideographs,
+/// CJK radicals and punctuation, compatibility ideographs and full-width forms. Kana and Hangul
+/// are deliberately outside it (they belong to the Japanese and Korean paths, not to this one).
+fn is_cjk(c: char) -> bool {
+    let u = u32::from(c);
+    // Half-width katakana and kana look like CJK punctuation by range but are not Chinese.
+    if matches!(u, 0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F) {
+        return false;
+    }
+    matches!(
+        u,
+        0x2E80..=0x2EFF // CJK radicals supplement
+            | 0x2F00..=0x2FDF // Kangxi radicals
+            | 0x3000..=0x303F // CJK symbols and punctuation
+            | 0x31C0..=0x31EF // CJK strokes
+            | 0x3400..=0x4DBF // CJK extension A
+            | 0x4E00..=0x9FFF // CJK unified ideographs
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFE30..=0xFE4F // CJK compatibility forms
+            | 0xFF00..=0xFFEF // full-width and half-width forms
+            | 0x20000..=0x2FA1F // extensions B–F and compatibility supplement
+            | 0x30000..=0x3134F // extension G
+    )
+}
+
 /// Arabic letters, marks, digits and punctuation: an item with any of them is shaped with the
 /// craft-fonts Arabic face.
 fn is_arabic(c: char) -> bool {
@@ -345,9 +374,9 @@ fn is_hebrew(c: char) -> bool {
 }
 
 /// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
-/// with the craft-fonts Arabic (#125) or Hebrew (#128) face, or Arabic or Hebrew that the face can't
-/// draw (or that has no face to draw it). Page-content tools refuse such text; the Add-text editor
-/// keeps it open.
+/// with the craft-fonts Chinese, Arabic (#125) or Hebrew (#128) face, or a character one of those
+/// faces can't draw (or that has no face to draw it). Page-content tools refuse such text; the
+/// Add-text editor keeps it open.
 pub fn first_undrawable(t: &AddedText) -> Option<char> {
     if t.text.chars().any(is_thai) {
         if let Some(c) = t.text.chars().find(|c| is_thai(*c) && !pdfcraft_fonts::thai_has(*c)) {
@@ -355,6 +384,10 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
         }
         let rest = AddedText { text: t.text.chars().filter(|c| !is_thai(*c)).collect(), ..t.clone() };
         return first_undrawable(&rest);
+    }
+    // Chinese that the Chinese face lacks (or every Chinese character when there is no face).
+    if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
+        return Some(c);
     }
     // Arabic or Hebrew that nothing can draw: there's no face, or the face lacks it.
     if let Some(c) =
@@ -377,11 +410,12 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
     })
 }
 
-/// Whether `t` has Arabic or Hebrew that its craft-fonts face draws (so `draw` lays it out with
-/// [`draw_shaped`]).
+/// Whether `t` has Chinese, Arabic or Hebrew that its craft-fonts face draws (so `draw` lays it
+/// out with [`draw_shaped`]).
 fn shaped_by_a_face(t: &AddedText) -> bool {
     (pdfcraft_fonts::document_arabic_font().is_some() && t.text.chars().any(is_arabic))
         || (pdfcraft_fonts::document_hebrew_font(false).is_some() && t.text.chars().any(is_hebrew))
+        || (pdfcraft_fonts::document_chinese_font().is_some() && t.text.chars().any(is_cjk))
 }
 
 /// An Arabic character the face shapes and draws (U+061C, a direction mark, is dropped).
@@ -440,6 +474,8 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
             let after_hebrew = segments.last().is_some_and(|(kind, _)| *kind == Some(ShapedScript::Hebrew));
             let script = if is_thai(c) {
                 Some(ShapedScript::Thai)
+            } else if is_cjk(c) {
+                Some(ShapedScript::Cjk)
             } else if is_hebrew(c) || (run_rtl && after_hebrew && !c.is_alphanumeric() && pdfcraft_fonts::hebrew_has(c)) {
                 Some(ShapedScript::Hebrew)
             } else if is_arabic(c) || (run_rtl && !c.is_alphanumeric() && pdfcraft_fonts::arabic_has(c)) {
@@ -461,6 +497,7 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
                     ShapedScript::Arabic => shape_arabic(&s, run_rtl).map_err(|e| arabic_error(e, &s))?,
                     ShapedScript::Hebrew => shape_hebrew(&s, run_rtl).map_err(|e| hebrew_error(e, &s))?,
                     ShapedScript::Thai => shape_thai(&s).map_err(|e| thai_error(e, &s))?,
+                    ShapedScript::Cjk => shape_cjk(&s).map_err(|e| cjk_error(e, &s))?,
                 };
                 Piece::Shaped(shaped)
             } else if run_rtl {
@@ -514,6 +551,16 @@ fn thai_error(e: GlyphError, text: &str) -> EditError {
         }
         GlyphError::Missing => format!("the Thai font can't show \"{text}\""),
         GlyphError::TooComplex => "the Thai glyphs are too complex; use a shorter text box".into(),
+    })
+}
+
+fn cjk_error(e: GlyphError, text: &str) -> EditError {
+    EditError::Invalid(match e {
+        GlyphError::NoFont => {
+            "Chinese text needs a Chinese font in this build; rebuild with CRAFT_FONTS_DIR pointing to craft-fonts with a Hans face".into()
+        }
+        GlyphError::Missing => format!("the Chinese font can't show \"{text}\""),
+        GlyphError::TooComplex => "the Chinese glyphs are too complex; use a shorter text box".into(),
     })
 }
 
@@ -596,9 +643,10 @@ const GLYPHS_PER_FONT: usize = 240;
 /// its pieces in drawing order and its width at the item's size.
 type LaidLine = (String, bool, Vec<Piece>, f64);
 
-/// Draw a text item that has Arabic, Hebrew or Thai in it. Each line is laid out in display order; their glyphs
-/// come from Type 3 fonts drawn from the craft-fonts face's outlines (no font file is embedded),
-/// with a ToUnicode map for copy and search. Other text uses the item's standard font.
+/// Draw a text item that has Chinese, Arabic, Hebrew or Thai in it. Each line is laid out in
+/// display order; their glyphs come from Type 3 fonts drawn from the craft-fonts face's outlines
+/// (no font file is embedded), with a ToUnicode map for copy and search. Other text uses the
+/// item's standard font.
 fn draw_shaped(doc: &mut Document, t: &AddedText, taken: &Dict, fonts: &mut Dict, out: &mut Vec<u8>) -> Result<(), EditError> {
     let laid = wrapped(t)
         .into_iter()
@@ -643,6 +691,7 @@ fn draw_laid_shaped(
                     ShapedScript::Arabic => arabic_error(e, &c.text),
                     ShapedScript::Hebrew => hebrew_error(e, &c.text),
                     ShapedScript::Thai => thai_error(e, &c.text),
+                    ShapedScript::Cjk => cjk_error(e, &c.text),
                 })?);
             }
         }
@@ -786,6 +835,7 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
                 ShapedScript::Arabic => "Arabic",
                 ShapedScript::Hebrew => "Hebrew",
                 ShapedScript::Thai => "Thai",
+                ShapedScript::Cjk => "Chinese",
             },
             |f| f.family,
         ),
@@ -849,6 +899,7 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
             fonts.set(name.clone().into_bytes(), Object::Dict(font));
             let face_or_new = |has: fn(char) -> bool, face: bool| t.text.chars().any(has) && (face || !existing);
             if t.text.chars().any(is_thai)
+                || face_or_new(is_cjk, pdfcraft_fonts::document_chinese_font().is_some())
                 || face_or_new(is_arabic, pdfcraft_fonts::document_arabic_font().is_some())
                 || face_or_new(is_hebrew, pdfcraft_fonts::document_hebrew_font(false).is_some())
             {
@@ -1096,6 +1147,14 @@ fn validate(c: &Content) -> Result<(), EditError> {
             if t.text.chars().any(is_thai) && pdfcraft_fonts::document_thai_font().is_none() {
                 return Err(thai_error(GlyphError::NoFont, &t.text));
             }
+            if t.text.chars().any(is_cjk) {
+                if pdfcraft_fonts::document_chinese_font().is_none() {
+                    return Err(cjk_error(GlyphError::NoFont, &t.text));
+                }
+                if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
+                    return Err(cjk_error(GlyphError::Missing, &c.to_string()));
+                }
+            }
             // Without the Arabic face, `draw` decides for the Arabic letters themselves (#403): a new
             // item is refused with what's missing, and one that already holds Arabic stays movable.
             // Everything else in it is drawn in the standard font, so it still has to fit.
@@ -1225,7 +1284,7 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
     Ok(())
 }
 
-/// The Type 3 fonts an Arabic item's stream shows text with. Each item has its own (`draw_shaped`
+/// The Type 3 fonts a shaped item's stream shows text with. Each item has its own (`draw_shaped`
 /// names them so), so they go when the item is replaced or deleted.
 fn own_fonts(doc: &Document, obj: ObjRef) -> Vec<Vec<u8>> {
     let Object::Stream(s) = &*doc.get(obj) else { return Vec::new() };

@@ -408,6 +408,9 @@ pub struct Document {
     /// Where `endstream` occurs in `data`; see [`EndstreamIndex`].
     endstreams: Arc<EndstreamIndex>,
     source_identity: Arc<()>,
+    /// Object numbers a full-file `scan_for` already failed to find. Without this, a hostile
+    /// xref that points every object past EOF costs O(objects × file size) rescans.
+    scan_misses: Arc<Mutex<HashSet<u32>>>,
     entries: Arc<XrefIndex>,
     trailer: Dict,
     revisions: Arc<Vec<Revision>>,
@@ -546,6 +549,7 @@ impl Document {
             data: Arc::new(Vec::new()),
             endstreams: Arc::default(),
             source_identity: Arc::new(()),
+            scan_misses: Arc::new(Mutex::new(HashSet::new())),
             entries: Arc::new(XrefIndex::empty()),
             trailer: Dict::new(),
             revisions: Arc::new(Vec::new()),
@@ -629,6 +633,7 @@ impl Document {
             data,
             endstreams: Arc::default(),
             source_identity: Arc::new(()),
+            scan_misses: Arc::new(Mutex::new(HashSet::new())),
             entries: Arc::new(XrefIndex::empty()),
             trailer: Dict::new(),
             revisions: Arc::new(Vec::new()),
@@ -1252,6 +1257,9 @@ impl Document {
 
     /// Last-resort lookup: scan the file for `num G obj`.
     fn scan_for(&self, num: u32) -> Option<(ObjRef, Object)> {
+        if self.scan_misses.lock().is_ok_and(|misses| misses.contains(&num)) {
+            return None;
+        }
         let needle = format!("{num} ");
         let data = &self.data;
         let mut found = None;
@@ -1266,6 +1274,11 @@ impl Document {
             {
                 found = Some((id, o)); // keep the last (newest) definition
             }
+        }
+        if found.is_none()
+            && let Ok(mut misses) = self.scan_misses.lock()
+        {
+            misses.insert(num);
         }
         found
     }
@@ -1287,6 +1300,14 @@ impl Document {
     /// Replace an object (keeping its generation).
     pub fn set(&mut self, r: ObjRef, obj: impl Into<Object>) {
         let obj = self.adopt(obj.into());
+        // A replaced object may have been an object stream; members not individually overlaid
+        // must not keep reading the stream's old decoded table.
+        if let Ok(mut streams) = self.objstms.lock() {
+            streams.remove(&r.num);
+        }
+        if let Ok(mut misses) = self.scan_misses.lock() {
+            misses.remove(&r.num);
+        }
         self.overlay.insert(r.num, Slot::Set(r.generation, Arc::new(obj)));
         if r.num >= self.next_num {
             self.next_num = r.num.saturating_add(1);
@@ -1314,6 +1335,12 @@ impl Document {
 
     /// Delete an object (its number becomes free with the next generation).
     pub fn free(&mut self, r: ObjRef) {
+        if let Ok(mut streams) = self.objstms.lock() {
+            streams.remove(&r.num);
+        }
+        if let Ok(mut misses) = self.scan_misses.lock() {
+            misses.remove(&r.num);
+        }
         self.overlay.insert(r.num, Slot::Freed(r.generation.saturating_add(1)));
     }
 
@@ -1324,6 +1351,9 @@ impl Document {
     pub fn free_unlinked_additions(&mut self) {
         for num in crate::writer::unlinked_additions(self) {
             let generation = self.generation(num);
+            if let Ok(mut streams) = self.objstms.lock() {
+                streams.remove(&num);
+            }
             self.overlay.insert(num, Slot::Freed(generation));
         }
     }

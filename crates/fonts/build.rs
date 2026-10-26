@@ -13,6 +13,8 @@ mod cjk_scripts;
 fn main() {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
+    // The CJK embedding rule lives beside this script; re-run when it changes.
+    println!("cargo::rerun-if-changed=src/cjk_scripts.rs");
     let mut src = String::from("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
     if let Some(dir) = std::env::var_os("CRAFT_FONTS_DIR").map(PathBuf::from) {
         match craft_fonts(&dir) {

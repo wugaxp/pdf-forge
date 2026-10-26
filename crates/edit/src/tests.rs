@@ -3658,15 +3658,48 @@ fn header_and_watermark_drawability_matches_what_applying_refuses() {
     }
 }
 
+/// Chinese Add Text is written with a generated Type 3 font: the `/ToUnicode` map keeps copy and
+/// search working, and wrapping breaks between characters.
+#[test]
+fn chinese_added_text_uses_the_hans_type3_fallback() {
+    if pdfcraft_fonts::document_chinese_font().is_none() {
+        eprintln!("skipping the Chinese Add Text check: built without a craft-fonts Hans face (set CRAFT_FONTS_DIR)");
+        return;
+    }
+    let text = AddedText {
+        rect: [72.0, 600.0, 180.0, 700.0], text: "你好，世界！这是一段简体中文测试。".into(), size: 14.0, ..AddedText::default()
+    };
+    assert_eq!(first_undrawable(&text), None);
+    assert!(crate::added::lines(&text).len() > 1, "Chinese wraps between characters");
+    let mut doc = fixture();
+    add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
+    let doc = reopen(&doc);
+    let added = list_added(&doc);
+    let Content::Text(t) = &added[0].content else { panic!("expected text") };
+    assert_eq!(t.text, text.text, "the logical text is kept for editing");
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("PCAr"), "{content}");
+    let page = pdfcraft_model::pages(&doc).swap_remove(0);
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap());
+    let fonts = doc.resolve(res.as_dict().unwrap().get(b"Font").unwrap());
+    let (_, font) = fonts.as_dict().unwrap().iter().find(|(name, _)| name.starts_with(b"PCAr")).expect("a generated Chinese font");
+    let font = doc.resolve(font);
+    assert_eq!(font.as_dict().unwrap().name(b"Subtype"), Some(&b"Type3"[..]));
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let all: String = lines.iter().map(|l| l.text.as_str()).collect();
+    assert!(all.contains(&text.text), "{all}");
+}
+
 /// #125: page-content tools refuse text the standard fonts can't draw instead of writing `?`,
 /// and leave the document untouched.
 #[test]
 fn page_text_the_standard_fonts_cant_draw_is_refused() {
     let mut doc = fixture();
     let before: Vec<Vec<String>> = (0..3).map(|p| streams(&reopen(&doc), p)).collect();
-    let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "日本語のテキスト".into(), ..AddedText::default() };
+    // Japanese kana are still outside the Chinese face's path, so this stays refused.
+    let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "にほんごのテキスト".into(), ..AddedText::default() };
     let err = add_content(&mut doc, 0, &Content::Text(text)).unwrap_err().to_string();
-    assert!(err.contains("\"日\" (U+65E5)"), "{err}");
+    assert!(err.contains("\"に\" (U+306B)"), "{err}");
     let hf = HeaderFooter {
         text: ["Ελληνικά".into(), String::new(), String::new(), String::new(), String::new(), String::new()],
         ..HeaderFooter::default()
@@ -3681,8 +3714,8 @@ fn page_text_the_standard_fonts_cant_draw_is_refused() {
     add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
     // Retyping existing text is refused the same way, and the whole document is left as it was.
     let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
-    let retyped = AddedText { text: "Café 中".into(), ..text.clone() };
-    assert!(update_content(&mut doc, 0, 0, &Content::Text(retyped)).unwrap_err().to_string().contains("U+4E2D"));
+    let retyped = AddedText { text: "Café の".into(), ..text.clone() };
+    assert!(update_content(&mut doc, 0, 0, &Content::Text(retyped)).unwrap_err().to_string().contains("U+306E"));
     assert_eq!(write_incremental(&doc, &SaveOptions::default()).unwrap(), saved, "a refused update changes nothing");
     // A carriage return is checked where it would be drawn: added text splits on LF only, so
     // CRLF would leave a `?`; headers and watermarks split CRLF into lines, but not a lone CR.
@@ -3699,13 +3732,13 @@ fn page_text_the_standard_fonts_cant_draw_is_refused() {
     let arabic = |text: &str| AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: text.into(), ..AddedText::default() };
     // U+061C is in the Arabic block but is a direction mark that's dropped, not shaped: it never
     // makes text drawable, nor (with the face) undrawable.
-    assert!(add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}中"))).is_err());
+    assert!(add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}の"))).is_err());
     if pdfcraft_fonts::arabic_has('م') {
         add_content(&mut doc, 0, &Content::Text(arabic("مرحبا Hello"))).unwrap();
         add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}Hello"))).unwrap();
-        for text in ["مرحبا 中", "\u{061C}中"] {
+        for text in ["مرحبا の", "\u{061C}の"] {
             let err = add_content(&mut doc, 0, &Content::Text(arabic(text))).unwrap_err().to_string();
-            assert!(err.contains("U+4E2D"), "{text:?}: {err}");
+            assert!(err.contains("U+306E"), "{text:?}: {err}");
         }
     } else {
         // #403's own refusal says what's missing; the Add-text editor still keeps the draft.
@@ -4034,7 +4067,7 @@ fn added_thai_text_wraps_clusters_and_survives_reopen() {
     assert_eq!(super::added::lines(&narrow), ["กิ่", "กิ่", "กิ่"]);
     update_content(&mut doc, 0, 0, &Content::Text(AddedText { text: "แก้ไข น้ำ".into(), ..t.clone() })).unwrap();
     assert!(!own(&doc, 0).is_empty());
-    let bad = Content::Text(AddedText { text: "ไทย 日".into(), ..t });
+    let bad = Content::Text(AddedText { text: "ไทย の".into(), ..t });
     let before = list_added(&doc);
     assert!(update_content(&mut doc, 0, 0, &bad).is_err());
     assert_eq!(list_added(&doc), before);

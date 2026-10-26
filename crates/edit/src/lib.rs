@@ -696,11 +696,12 @@ fn place_inside_wrapper(doc: &mut Document, page: &pdfcraft_model::Page, tag: &s
 /// it away); the original content is wrapped in q/Q first. Used for applied redaction boxes.
 /// Returns the new content stream.
 pub fn stamp(doc: &mut Document, page: usize, tag: &str, content: Vec<u8>) -> Result<ObjRef, EditError> {
-    let all = page_list(doc);
+    let mut all = page_list(doc);
     check(&[page], all.len())?;
-    check_on_top(doc, &all[page])?;
-    add_resources(doc, &all[page], None, Some(&content))?;
-    let p = page_list(doc).swap_remove(page);
+    // `place_tagged` performs the same isolation check immediately before writing and refuses
+    // `TooDeep` there; checking here parsed the page content a second time for every stamp.
+    let p = all.swap_remove(page);
+    add_resources(doc, &p, None, Some(&content))?;
     place_tagged(doc, &p, tag, content, false)
 }
 

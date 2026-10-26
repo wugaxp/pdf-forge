@@ -38,14 +38,21 @@ fn add_page(doc: &mut Document, w: f64, h: f64, resources: Dict, content: Option
         let s = doc.add(Object::Stream(Stream::flate(Dict::new(), &c)));
         page.set(b"Contents".to_vec(), Object::Ref(s));
     }
-    let r = doc.add(page);
-    let _ = doc.update_dict(pages, |d| {
-        let mut kids = d.get(b"Kids").and_then(|k| k.as_array().cloned()).unwrap_or_default();
-        kids.push(Object::Ref(r));
+    Ok(doc.add(page))
+}
+
+/// Write the page tree's `/Kids` and `/Count` once after all pages are made. Updating them per
+/// page copied the growing array for every page, O(pages²).
+fn set_page_kids(doc: &mut Document, kids: Vec<ObjRef>) -> Result<(), CreateError> {
+    let pages = doc
+        .root()
+        .and_then(|r| doc.get(r).as_dict().and_then(|d| d.reference(b"Pages")))
+        .ok_or_else(|| CreateError::Invalid("the new document has no page tree".into()))?;
+    doc.update_dict(pages, |d| {
         d.set(b"Count".to_vec(), Object::Int(kids.len() as i64));
-        d.set(b"Kids".to_vec(), Object::Array(kids));
-    });
-    Ok(r)
+        d.set(b"Kids".to_vec(), Object::Array(kids.into_iter().map(Object::Ref).collect()));
+    })
+    .map_err(|e| CreateError::Invalid(e.to_string()))
 }
 
 fn set_title(doc: &mut Document, title: &str) {
@@ -65,9 +72,11 @@ pub fn blank(width: f64, height: f64, pages: usize) -> Result<Document, CreateEr
         return Err(CreateError::Invalid("invalid page size or count".into()));
     }
     let mut doc = Document::new_empty();
+    let mut kids = Vec::with_capacity(pages);
     for _ in 0..pages {
-        add_page(&mut doc, width, height, Dict::new(), None)?;
+        kids.push(add_page(&mut doc, width, height, Dict::new(), None)?);
     }
+    set_page_kids(&mut doc, kids)?;
     Ok(doc)
 }
 
@@ -606,6 +615,7 @@ pub fn from_images_with_resolution(images: &[(String, Vec<u8>)], resolution: Ima
         return Err(CreateError::Invalid("no images".into()));
     }
     let mut doc = Document::new_empty();
+    let mut kids = Vec::with_capacity(images.len());
     let mut profiles = Vec::new();
     for img in images.iter().map(|(name, bytes)| embed(name, bytes, usize::MAX)).collect::<Result<Vec<_>, _>>()?.into_iter().flatten() {
         let dpi = match resolution {
@@ -623,8 +633,9 @@ pub fn from_images_with_resolution(images: &[(String, Vec<u8>)], resolution: Ima
         let mut res = Dict::new();
         res.set(b"XObject".to_vec(), Object::Dict(xobj));
         let content = format!("q {w:.3} 0 0 {h:.3} 0 0 cm /Im0 Do Q\n").into_bytes();
-        add_page(&mut doc, w, h, res, Some(content))?;
+        kids.push(add_page(&mut doc, w, h, res, Some(content))?);
     }
+    set_page_kids(&mut doc, kids)?;
     if let Some((name, _)) = images.first() {
         set_title(&mut doc, name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s));
     }
@@ -730,6 +741,7 @@ fn set_text(title: &str, text: &str, page: (f64, f64), font_size: f64) -> Result
             p.push(l.clone());
         }
     }
+    let mut kids = Vec::new();
     for lines in page_lines {
         let mut c = format!("BT /F1 {size} Tf {line_h:.3} TL {margin} {:.3} Td\n", h - margin - size).into_bytes();
         for l in lines {
@@ -741,8 +753,9 @@ fn set_text(title: &str, text: &str, page: (f64, f64), font_size: f64) -> Result
         fonts.set(b"F1".to_vec(), Object::Ref(fr));
         let mut res = Dict::new();
         res.set(b"Font".to_vec(), Object::Dict(fonts));
-        add_page(&mut doc, w, h, res, Some(c))?;
+        kids.push(add_page(&mut doc, w, h, res, Some(c))?);
     }
+    set_page_kids(&mut doc, kids)?;
     set_title(&mut doc, title);
     Ok(doc)
 }

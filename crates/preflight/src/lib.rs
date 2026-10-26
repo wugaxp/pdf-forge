@@ -24,6 +24,8 @@
 pub mod icc;
 mod xmp;
 
+use std::collections::HashMap;
+
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 
 /// The PDF/A part and conformance level.
@@ -411,7 +413,7 @@ fn uses_device_colour(doc: &Document, objs: &[(ObjRef, std::sync::Arc<Object>)])
         if !(used.gray && used.rgb && used.cmyk)
             && let Object::Stream(s) = &**o
             && (referenced.contains(r) || is_content(&s.dict))
-            && let Ok(data) = s.decoded()
+            && let Ok(data) = s.decoded_within(64 << 20)
         {
             let _ = content_colour(&data, &mut used);
         }
@@ -794,7 +796,17 @@ pub fn convert(doc: &mut Document, level: Level) -> Result<Report, pdfcraft_cos:
 
     // Pages, annotations, fields, images, embedded files.
     let (mut actions, mut flags, mut images, mut removed, mut files) = (0, 0, 0, 0, 0);
-    for p in pdfcraft_model::pages(doc) {
+    let pages = pdfcraft_model::pages(doc);
+    let mut annotation_pages: HashMap<ObjRef, ObjRef> = HashMap::new();
+    for p in &pages {
+        let annots = p.dict.get(b"Annots").map(|a| doc.resolve(a)).and_then(|a| a.as_array().cloned()).unwrap_or_default();
+        for a in annots {
+            if let Some(r) = a.as_ref() {
+                annotation_pages.entry(r).or_insert(p.obj);
+            }
+        }
+    }
+    for p in &pages {
         let mut changed = false;
         doc.update_dict(p.obj, |d| changed = d.remove(b"AA").is_some())?;
         actions += changed as usize;
@@ -805,13 +817,17 @@ pub fn convert(doc: &mut Document, level: Level) -> Result<Report, pdfcraft_cos:
         let sub = d.name(b"Subtype").map(<[u8]>::to_vec);
         let is_annot = ty.as_deref() == Some(b"Annot");
         if is_annot && sub.as_deref().is_some_and(|s| FORBIDDEN_ANNOTS.contains(&s)) {
-            // Take it off its page.
-            for p in pdfcraft_model::pages(doc) {
-                let annots = p.dict.get(b"Annots").map(|a| doc.resolve(a)).and_then(|a| a.as_array().cloned()).unwrap_or_default();
-                if annots.iter().any(|a| a.as_ref() == Some(r)) {
-                    let kept: Vec<Object> = annots.into_iter().filter(|a| a.as_ref() != Some(r)).collect();
-                    doc.update_dict(p.obj, |pd| pd.set(b"Annots".to_vec(), Object::Array(kept)))?;
-                }
+            // Take it off the page that lists it; the map was built once, not per annotation.
+            if let Some(&page) = annotation_pages.get(&r) {
+                let annots = doc
+                    .get(page)
+                    .as_dict()
+                    .and_then(|d| d.get(b"Annots"))
+                    .map(|a| doc.resolve(a))
+                    .and_then(|a| a.as_array().cloned())
+                    .unwrap_or_default();
+                let kept: Vec<Object> = annots.into_iter().filter(|a| a.as_ref() != Some(r)).collect();
+                doc.update_dict(page, |pd| pd.set(b"Annots".to_vec(), Object::Array(kept)))?;
             }
             removed += 1;
             continue;

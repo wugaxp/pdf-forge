@@ -14,6 +14,50 @@ use crate::{PdfCraftApp, widgets};
 
 const MARK_RED: Color32 = Color32::from_rgb(0xE3, 0x22, 0x22);
 
+/// A redaction search scanning a large document off the UI thread.
+pub(crate) struct RedactSearchJob {
+    rx: std::sync::mpsc::Receiver<Result<Vec<Edit>, String>>,
+    doc: pdfcraft_engine::DocId,
+    bytes: std::sync::Arc<Vec<u8>>,
+}
+
+/// Everything a redaction search needs, captured so a large document can scan on a thread.
+struct RedactScan {
+    bytes: std::sync::Arc<Vec<u8>>,
+    password: Option<String>,
+    pages: Vec<pdfcraft_render::PageInfo>,
+    needles: Vec<String>,
+    mode: SearchMode,
+    pattern: RedactPattern,
+    case_sensitive: bool,
+    whole_words: bool,
+    prefs: RedactPrefs,
+    author: String,
+}
+
+/// Read every page's text and build the marks for the search draft.
+fn find_redact_edits(scan: RedactScan) -> Vec<Edit> {
+    let RedactScan { bytes, password, pages, needles, mode, pattern, case_sensitive, whole_words, prefs, author } = scan;
+    let config = pdfcraft_render::RenderConfig { password: password.as_deref().map(std::sync::Arc::from), ..Default::default() };
+    let mut r = pdfcraft_render::PageRenderer::new(bytes, config);
+    let mut edits = Vec::new();
+    for (page, page_info) in pages.iter().enumerate() {
+        let out = r.render(pdfcraft_render::RenderRequest { page, kind: pdfcraft_render::RequestKind::Text, scale: 1.0, ..Default::default() });
+        let Some(text) = out.text else { continue };
+        let hits = match mode {
+            SearchMode::Patterns => text.find_with(|c| pdfcraft_engine::find_pattern(pattern, c)),
+            _ => needles.iter().flat_map(|w| text.find_opts(w, case_sensitive, whole_words)).collect(),
+        };
+        for h in hits {
+            let quads: Vec<[f64; 8]> = text.line_rects(h).into_iter().map(|r| page_info.view_rect_to_quad(r)).collect();
+            if !quads.is_empty() {
+                edits.push(prefs.mark(page, quads, &author));
+            }
+        }
+    }
+    edits
+}
+
 /// Redaction Tool Properties: what new marks look like once applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedactPrefs {
@@ -298,7 +342,8 @@ pub(crate) fn paint(painter: &egui::Painter, page: usize, view: &DocView, pointe
 }
 
 impl PdfCraftApp {
-    /// Mark every match of the search draft on every page; returns how many were marked.
+    /// Mark every match of the search draft on every page; returns how many were marked now.
+    /// A large document scans on a worker thread; [`Self::poll_redact_search`] adds its marks.
     pub fn redact_search(&mut self) -> usize {
         let Some((_, id)) = self.active_ids() else { return 0 };
         let Some(doc) = self.session.get(id) else { return 0 };
@@ -311,29 +356,85 @@ impl PdfCraftApp {
         if d.mode != SearchMode::Patterns && needles.is_empty() {
             return 0;
         }
-        let config = pdfcraft_render::RenderConfig { password: doc.password.as_deref().map(std::sync::Arc::from), ..Default::default() };
-        let mut r = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), config);
-        let mut edits = Vec::new();
+        let doc_bytes = doc.bytes.clone();
+        let bytes = doc_bytes.clone();
+        let bytes_len = bytes.len();
+        let password = doc.password.clone();
+        let pages = doc.info.pages.clone();
+        let prefs = self.redact_prefs.clone();
         let author = self.comment_prefs.author.clone();
-        for (page, page_info) in doc.info.pages.iter().enumerate() {
-            let out = r.render(pdfcraft_render::RenderRequest { page, kind: pdfcraft_render::RequestKind::Text, scale: 1.0, ..Default::default() });
-            let Some(text) = out.text else { continue };
-            let hits = match d.mode {
-                SearchMode::Patterns => text.find_with(|c| pdfcraft_engine::find_pattern(d.pattern, c)),
-                _ => needles.iter().flat_map(|w| text.find_opts(w, d.case_sensitive, d.whole_words)).collect(),
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work = move || {
+            let scan = RedactScan {
+                bytes,
+                password,
+                pages,
+                needles,
+                mode: d.mode,
+                pattern: d.pattern,
+                case_sensitive: d.case_sensitive,
+                whole_words: d.whole_words,
+                prefs,
+                author,
             };
-            for h in hits {
-                let quads: Vec<[f64; 8]> = text.line_rects(h).into_iter().map(|r| page_info.view_rect_to_quad(r)).collect();
-                if !quads.is_empty() {
-                    edits.push(self.redact_prefs.mark(page, quads, &author));
+            let _ = tx.send(Ok(find_redact_edits(scan)));
+        };
+        // Tests and ordinary documents finish now; a large scan must not freeze the frame.
+        let inline = self.run_inline || bytes_len < (1 << 20);
+        if inline {
+            work();
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::thread::Builder::new().name("pdfcraft-redact-search".into()).spawn(work).is_err() {
+                self.notify_tr("Could not start the redaction search");
+                return 0;
+            }
+            #[cfg(target_arch = "wasm32")]
+            work();
+        }
+        self.redact_search_job = Some(RedactSearchJob { rx, doc: id, bytes: doc_bytes });
+        if inline {
+            self.poll_redact_search();
+            self.redact_search.found.unwrap_or(0)
+        } else {
+            self.notify_tr("Searching for redaction matches…");
+            0
+        }
+    }
+
+    /// Add the marks of a finished redaction search.
+    pub(crate) fn poll_redact_search(&mut self) {
+        let Some(job) = self.redact_search_job.as_ref() else { return };
+        let result = match job.rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(80));
                 }
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the redaction search stopped".to_string()),
+        };
+        let Some(job) = self.redact_search_job.take() else { return };
+        if self.active_ids().map(|(_, active)| active) != Some(job.doc)
+            || !self.session.get(job.doc).is_some_and(|d| std::sync::Arc::ptr_eq(&d.bytes, &job.bytes))
+        {
+            self.redact_search.found = Some(0);
+            return;
+        }
+        match result {
+            Ok(edits) => {
+                let n = edits.len();
+                if n > 0 {
+                    self.apply_edit(Edit::Batch { label: "Mark for redaction".into(), edits });
+                }
+                self.redact_search.found = Some(n);
+            }
+            Err(e) => {
+                self.redact_search.found = Some(0);
+                self.notify(e);
             }
         }
-        let n = edits.len();
-        if n > 0 {
-            self.apply_edit(Edit::Batch { label: "Mark for redaction".into(), edits });
-        }
-        n
     }
 
     /// Mark the pages of the Redact pages draft.

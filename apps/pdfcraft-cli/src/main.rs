@@ -80,7 +80,7 @@ pdfcraft-cli run    --script steps.json [--root DIR] [--report]
     "\
 pdfcraft-cli ui     --control FILE <method> [key=value …] [--out shot.png]
                                                            drive a running app started with --control FILE
-help and feedback: https://discord.gg/artcraft"
+help and feedback: https://github.com/storytold/pdfcraft"
 );
 
 fn main() -> ExitCode {
@@ -176,8 +176,8 @@ fn stdout_line(line: std::fmt::Arguments<'_>) -> Result<(), CliError> {
 
 fn version() -> Result<(), CliError> {
     stdout_line(format_args!("pdfcraft-cli {}", pdfcraft_engine::build_info::version()))?;
-    stdout_line(format_args!("Discord: {}  (help and feedback)", pdfcraft_engine::links::DISCORD))?;
-    stdout_line(format_args!("Web:     {}", pdfcraft_engine::links::APP_PAGE))?;
+    stdout_line(format_args!("Project: {}", pdfcraft_engine::links::GITHUB))?;
+    stdout_line(format_args!("Upstream: {}", pdfcraft_engine::links::UPSTREAM))?;
     stdout_line(format_args!("Source:  {}", pdfcraft_engine::links::GITHUB))?;
     Ok(())
 }

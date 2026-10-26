@@ -29,6 +29,10 @@ set). Without that variable `CRAFT_FONTS` is empty and everything below copes:
   Chinese characters the Japanese faces lack show the replacement glyph).
 - `ui_cjk_fonts(prefer_hans)`: both in fallback order for the UI language (Chinese group first
   in Chinese mode, so one line never mixes faces with different vertical metrics).
+- `document_chinese_font` / `shape_cjk` / `cjk_has`: the Regular `Hans` face (Noto Sans CJK SC)
+  whose outlines become the Type 3 fallback for Simplified Chinese text written by Add Text.
+  `shape_cjk` maps one character per cluster with its `/ToUnicode` entry, so copy and search keep
+  the typed characters. `None`/`GlyphError::NoFont` without a `Hans` face in the build input.
 - `ui_arabic_fonts`: the `Arab` faces for Arabic-script interface text (file names, document
   titles), in manifest order.
 - `ui_telugu_fonts`: the `Telu` faces for Telugu interface text (the Telugu catalog, file names,

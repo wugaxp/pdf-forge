@@ -43,6 +43,14 @@ pub fn ui_chinese_fonts() -> Vec<&'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.covers("Hans")).collect()
 }
 
+/// The face for Simplified Chinese text written into PDFs: the Regular `Hans` face, else any
+/// other. `None` without craft-fonts or when its revision has no Chinese face (the Add Text
+/// editor then keeps the text but cannot draw it, as it does for Arabic or Thai without a face).
+pub fn document_chinese_font() -> Option<&'static CraftFont> {
+    let hans = || CRAFT_FONTS.iter().filter(|f| f.covers("Hans"));
+    hans().find(|f| f.style == "Regular").or_else(|| hans().next())
+}
+
 /// The `Arab` craft-fonts faces for Arabic-script interface text (file names, document titles),
 /// in manifest order. Empty when built without craft-fonts or when it has no Arabic face.
 pub fn ui_arabic_fonts() -> Vec<&'static CraftFont> {
@@ -314,10 +322,9 @@ mod tests {
         assert_eq!(document_hebrew_font(false).is_some(), CRAFT_FONTS.iter().any(|f| f.covers("Hebr")));
     }
 
-    /// `build.rs` embeds the Japanese CJK faces whole and any other CJK face only up to
-    /// `MAX_OTHER_CJK_BYTES`, so a checkout with a large Chinese or Korean face (craft-fonts has the
-    /// 16.4 MB Noto Sans CJK SC) leaves it out. The four Japanese faces of the pinned craft-fonts
-    /// are 24.1 MB.
+    /// `build.rs` embeds the Japanese CJK faces and Noto Sans CJK SC whole, and any other CJK face
+    /// only up to `MAX_OTHER_CJK_BYTES`. The pinned craft-fonts Japanese faces are 24.1 MB and
+    /// Noto Sans CJK SC is 16.4 MB, so the whole set stays under 45 MB.
     #[test]
     fn cjk_faces_follow_the_size_rule() {
         use crate::cjk_scripts::{MAX_OTHER_CJK_BYTES, WHOLE_CJK_FAMILIES, is_cjk_script};
@@ -331,7 +338,7 @@ mod tests {
             assert!(u64::try_from(len).is_ok_and(|n| n <= MAX_OTHER_CJK_BYTES), "{} is embedded at {len} bytes", face.name());
         }
         let bytes: usize = whole.iter().map(|f| f.bytes.len()).sum();
-        assert!(bytes < 25_000_000, "{bytes} bytes of Japanese faces");
+        assert!(bytes < 45_000_000, "{bytes} bytes of whole CJK faces");
     }
 
     /// The bundled Inter faces carry the Latin, Greek and Cyrillic letters the craft-fonts faces

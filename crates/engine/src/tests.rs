@@ -37,6 +37,21 @@ fn session_with(n: usize) -> (Session, DocId) {
 }
 
 #[test]
+fn docmdp_levels_bound_the_edits_they_allow() {
+    let fill = Edit::SetFieldValue { name: "qty".into(), value: FieldValue::Text("4".into()) };
+    let rotate = Edit::RotatePages { pages: vec![0], degrees: 90 };
+    let shape = Shape::Rectangle { rect: [20.0, 20.0, 60.0, 60.0] };
+    let annotate =
+        Edit::AddAnnotation(NewAnnotation { page: 0, style: Style::default_for(&shape), shape, contents: String::new(), author: "Test".into() });
+    assert!(!certification_allows(&fill, 1), "P=1 permits no edit");
+    assert!(certification_allows(&fill, 2), "P=2 permits form filling");
+    assert!(!certification_allows(&rotate, 2), "P=2 does not permit page changes");
+    assert!(!certification_allows(&annotate, 2), "P=2 does not permit annotations");
+    assert!(certification_allows(&annotate, 3), "P=3 permits annotations");
+    assert!(!certification_allows(&rotate, 3), "P=3 still does not permit page changes");
+}
+
+#[test]
 fn prepared_open_does_not_mutate_the_session_until_commit() {
     fn assert_send<T: Send>() {}
     assert_send::<crate::PreparedDocument>();
@@ -636,16 +651,16 @@ fn metadata_edits_and_history_reuse_the_render_pool() {
 }
 
 #[test]
-fn field_and_comment_edits_still_rebuild_the_render_pool() {
+fn field_and_comment_edits_keep_the_render_pool_warm() {
     let mut s = Session::new().with_clock(|| 1_700_000_000);
     let id = s.open("form.pdf", None, Arc::new(scripted_form()), None).unwrap();
     let _ = shown(&s, id, 0);
     assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 1);
 
     s.apply(id, Edit::SetFieldValue { name: "qty".into(), value: FieldValue::Text("4".into()) }).unwrap();
-    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 0);
+    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 1, "the pool keeps its counters");
     let _ = shown(&s, id, 0);
-    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 1);
+    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 2, "and renders the edited page once");
 
     let shape = Shape::Rectangle { rect: [20.0, 20.0, 60.0, 60.0] };
     s.apply(
@@ -653,7 +668,7 @@ fn field_and_comment_edits_still_rebuild_the_render_pool() {
         Edit::AddAnnotation(NewAnnotation { page: 0, style: Style::default_for(&shape), shape, contents: String::new(), author: "Test".into() }),
     )
     .unwrap();
-    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 0);
+    assert_eq!(s.get(id).unwrap().renderer.stats().page_interpretations, 2);
 }
 
 #[test]
@@ -2728,6 +2743,26 @@ fn redaction_marks_apply_for_good_and_undo() {
     assert_eq!(page_texts(&s, id), ["Page 1", "Page 2"]);
     assert_eq!(s.apply(id, Edit::ClearRedactions).map(|_| s.get(id).unwrap().redaction_marks()), Ok(0));
     assert!(matches!(s.apply(id, Edit::ApplyRedactions { pages: None }), Err(EditError::Redact(_))));
+}
+
+/// Saving a redaction full rewrite drops the snapshots from before it: Undo + Save must not
+/// append the removed content as a later revision.
+#[test]
+fn saving_a_redaction_drops_undo_that_could_restore_it() {
+    let (mut s, id) = session_with(1);
+    let shape =
+        Shape::Redact { quads: vec![pdfcraft_annot::rect_quad([80.0, 140.0, 100.0, 180.0])], overlay: String::new(), look: Default::default() };
+    s.apply(
+        id,
+        Edit::AddAnnotation(NewAnnotation { page: 0, style: Style::default_for(&shape), shape, contents: String::new(), author: "Ada".into() }),
+    )
+    .unwrap();
+    s.apply(id, Edit::ApplyRedactions { pages: None }).unwrap();
+    let saved = s.save_bytes(id).unwrap();
+    s.mark_saved(id, saved.clone(), None).unwrap();
+    assert!(matches!(s.undo(id), Err(EditError::NothingToUndo)), "undo after a saved redaction must be gone");
+    let again = s.save_bytes(id).unwrap();
+    assert!(!again.windows(8).any(|w| w == b"(Page 1)"), "the redacted text came back after save + undo");
 }
 
 /// What [`mark_with_reply`] writes that must not reach a file once the mark is removed.

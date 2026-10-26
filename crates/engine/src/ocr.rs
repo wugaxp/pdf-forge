@@ -177,9 +177,10 @@ impl Session {
         let doc = self.get(id)?;
         let all = doc.info.pages.len();
         let pages: Vec<usize> = if pages.is_empty() { (0..all).collect() } else { pages.iter().copied().filter(|p| *p < all).collect() };
+        let wanted: std::collections::HashSet<usize> = pages.iter().copied().collect();
         let native = (0..all)
             .map(|p| {
-                if !pages.contains(&p) {
+                if !wanted.contains(&p) {
                     return None;
                 }
                 doc.page_images(p)

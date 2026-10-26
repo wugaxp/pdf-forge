@@ -455,7 +455,7 @@ fn content_draws(doc: &Document, content: &[Vec<u8>], xo: &Dict, name: &[u8], de
         if depth >= MAX_DEPTH {
             return None;
         }
-        let Ok(data) = s.decoded() else { return None };
+        let Ok(data) = s.decoded_within(128 << 20) else { return None };
         match content_draws(doc, std::slice::from_ref(&data), xo, name, depth + 1, seen) {
             Some(false) => {}
             other => return other,

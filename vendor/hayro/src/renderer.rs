@@ -25,6 +25,10 @@ use vello_cpu::{
 
 /// PdfCraft patch: largest image drawn, in pixels (2^28 ≈ 268 MP, well above real page images).
 const MAX_IMAGE_PIXELS: u64 = 1 << 28;
+/// PdfCraft patch: most soft masks and outline paths cached for one render. A hostile page
+/// with thousands of distinct masks/glyphs must not grow these caches without bound.
+const MAX_SOFT_MASKS: usize = 256;
+const MAX_OUTLINES: usize = 4096;
 
 /// PdfCraft patch: source axes allowed into CatmullRom planning. Unlike the final pixmap,
 /// sources need not fit u16: a 65536-pixel strip can safely shrink to a 16-pixel image.
@@ -474,6 +478,20 @@ enum ImagePixelFormat {
 }
 
 impl Renderer {
+    /// A soft mask, reusing the one drawn for the same key until the cache reaches its cap.
+    fn cached_soft_mask(&mut self, mask: &SoftMask<'_>, settings: RenderSettings, width: u16, height: u16) -> Mask {
+        let key = mask.cache_key();
+        if let Some(cached) = self.soft_mask_cache.get(&key) {
+            return cached.clone();
+        }
+        if self.soft_mask_cache.len() >= MAX_SOFT_MASKS {
+            self.soft_mask_cache.clear();
+        }
+        let drawn = draw_soft_mask(mask, settings, width, height, self.preview);
+        self.soft_mask_cache.insert(key, drawn.clone());
+        drawn
+    }
+
     /// PdfCraft patch (22): whether the innermost transparency group is a knockout group.
     fn in_knockout(&self) -> bool {
         self.knockout.last().copied().unwrap_or(false)
@@ -1504,7 +1522,11 @@ impl Renderer {
         }
 
         let path = Rc::new(glyph.outline());
-        self.outline_cache.borrow_mut().insert(id, path.clone());
+        let mut cache = self.outline_cache.borrow_mut();
+        if cache.len() >= MAX_OUTLINES {
+            cache.clear();
+        }
+        cache.insert(id, path.clone());
         path
     }
 
@@ -1716,22 +1738,12 @@ impl<'a> Device<'a> for Renderer {
                 .last()
                 .copied()
                 .unwrap_or(false);
-        self.ctx.push_layer(
-            None,
-            Some(convert_blend_mode(blend_mode)),
-            Some(opacity),
-            // TODO: Deduplicate
-            mask.map(|m| {
-                let width = self.ctx.width();
-                let height = self.ctx.height();
-
-                self.soft_mask_cache
-                    .entry(m.cache_key())
-                    .or_insert_with(|| draw_soft_mask(&m, settings, width, height, self.preview))
-                    .clone()
-            }),
-            None,
-        );
+        let soft_mask = mask.map(|m| {
+            let width = self.ctx.width();
+            let height = self.ctx.height();
+            self.cached_soft_mask(&m, settings, width, height)
+        });
+        self.ctx.push_layer(None, Some(convert_blend_mode(blend_mode)), Some(opacity), soft_mask, None);
         self.image_transparency_stack
             .push(force_images_may_have_transparency);
         self.knockout.push(false);
@@ -1828,10 +1840,7 @@ impl<'a> Device<'a> for Renderer {
             let width = self.ctx.width();
             let height = self.ctx.height();
 
-            self.soft_mask_cache
-                .entry(m.cache_key())
-                .or_insert_with(|| draw_soft_mask(&m, settings, width, height, self.preview))
-                .clone()
+            self.cached_soft_mask(&m, settings, width, height)
         });
         if let Some(mask) = self.cur_mask.clone() {
             self.ctx.set_mask(mask);

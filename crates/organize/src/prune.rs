@@ -219,7 +219,7 @@ impl Pruner<'_> {
             }
             #[cfg(test)]
             crate::work(1);
-            match s.decoded() {
+            match s.decoded_within(64 << 20) {
                 Ok(data) => self.content(&data, &inner, inner_owner, depth + 1),
                 // What the form draws is unknown: keep everything it could reach.
                 Err(_) => {

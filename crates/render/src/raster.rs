@@ -392,6 +392,84 @@ fn render_page<'a>(
     }
 }
 
+/// A whole page rendered at one scale, kept by a worker so the next tile of that page copies
+/// pixels instead of interpreting the page again. Small enough to be worth its memory.
+struct Surface {
+    key: (usize, u32, bool, bool),
+    width: u32,
+    height: u32,
+    pixels: Pixels,
+}
+
+/// Largest whole-page surface cached per worker (16 MB). A tiled page is usually much larger;
+/// those keep the ordinary per-tile path.
+const MAX_SURFACE_PIXELS: u64 = 4_000_000;
+
+fn tile_from_surface(surface: &Surface, tile: Tile) -> Option<Output> {
+    let (tw, th) = (tile.w.clamp(1, 4096), tile.h.clamp(1, 4096));
+    let mut pixels = Pixels::zeroed(tw as usize, th as usize)?;
+    let src = &*surface.pixels;
+    let dst = pixels.bytes_mut();
+    for row in 0..th {
+        let sy = tile.y.saturating_add(row);
+        if sy >= surface.height {
+            break;
+        }
+        for col in 0..tw {
+            let sx = tile.x.saturating_add(col);
+            if sx >= surface.width {
+                break;
+            }
+            let si = ((sy as usize * surface.width as usize) + sx as usize) * 4;
+            let di = ((row as usize * tw as usize) + col as usize) * 4;
+            if let (Some(s), Some(d)) = (src.get(si..si + 4), dst.get_mut(di..di + 4)) {
+                d.copy_from_slice(s);
+            }
+        }
+    }
+    Some((tw, th, pixels, None))
+}
+
+/// Render a tile, reusing a whole-page surface when one is already cached (or is cheap enough
+/// to build once). Falls back to the ordinary tile path for pages beyond [`MAX_SURFACE_PIXELS`].
+fn render_with_surface<'a>(
+    pdf: &'a Pdf,
+    cache: &RenderCache<'a>,
+    settings: &InterpreterSettings,
+    config: &RenderConfig,
+    req: RenderRequest,
+    surface: &mut Option<Surface>,
+) -> Result<Output, (String, bool)> {
+    let Some(tile) = req.tile.filter(|_| req.kind == RequestKind::Pixels) else {
+        return render_page(pdf, cache, settings, config, req);
+    };
+    let key = (req.page, req.scale.to_bits(), req.preview, req.tag & PRINT_TAG != 0);
+    if let Some(s) = surface.as_ref().filter(|s| s.key == key)
+        && let Some(out) = tile_from_surface(s, tile)
+    {
+        return Ok(out);
+    }
+    let fits = pdf.pages().get(req.page).is_some_and(|page| {
+        let (w, h) = page.render_dimensions();
+        let scale = req.scale.clamp(0.01, 400.0);
+        let fw = device_pixels(w, scale);
+        let fh = device_pixels(h, scale);
+        fw <= MAX_SIDE as u32 && fh <= MAX_SIDE as u32 && u64::from(fw) * u64::from(fh) <= MAX_SURFACE_PIXELS
+    });
+    if fits {
+        let full = RenderRequest { tile: None, ..req };
+        if let Ok((w, h, pixels, None)) = render_page(pdf, cache, settings, config, full) {
+            *surface = Some(Surface { key, width: w, height: h, pixels });
+            if let Some(s) = surface.as_ref()
+                && let Some(out) = tile_from_surface(s, tile)
+            {
+                return Ok(out);
+            }
+        }
+    }
+    render_page(pdf, cache, settings, config, req)
+}
+
 fn finish(req: RenderRequest, start: Stopwatch, r: Result<Output, (String, bool)>, warnings: Vec<RenderWarning>) -> RenderedPage {
     let millis = start.millis();
     match r {
@@ -431,13 +509,14 @@ pub struct PageRenderer {
     pdf: Option<Pdf>,
     settings: InterpreterSettings,
     stats: RenderStats,
+    surface: Option<Surface>,
 }
 
 impl PageRenderer {
     pub fn new(bytes: Arc<Vec<u8>>, config: RenderConfig) -> Self {
         let pdf = parse(&bytes, config.password.as_deref());
         let settings = config.settings();
-        Self { bytes, config, pdf, settings, stats: RenderStats { parser_builds: 1, ..RenderStats::default() } }
+        Self { bytes, config, pdf, settings, stats: RenderStats { parser_builds: 1, ..RenderStats::default() }, surface: None }
     }
 
     pub fn page_count(&self) -> usize {
@@ -479,10 +558,11 @@ impl PageRenderer {
         let cache = RenderCache::new();
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let settings = warning_settings(&self.settings, warnings.clone());
-        let r = render_page(pdf, &cache, &settings, &self.config, req);
+        let r = render_with_surface(pdf, &cache, &settings, &self.config, req, &mut self.surface);
         let warnings = take_warnings(&warnings);
         if matches!(r, Err((_, true))) {
             self.pdf = parse(&self.bytes, self.config.password.as_deref());
+            self.surface = None;
             self.stats.parser_builds += 1;
         }
         finish(req, start, r, warnings)
@@ -701,6 +781,15 @@ impl PoolParser {
         self.retire();
     }
 
+    /// The document bytes changed: no shared parser may survive, but a parse that was merely in
+    /// flight must not become a terminal failure for the new source.
+    fn replace_source(&self) {
+        let mut state = lock(&self.state);
+        self.valid.store(false, Ordering::Release);
+        *state = ParserState::Private;
+        self.ready.notify_all();
+    }
+
     /// After a shared render failed or timed out: later work parses privately, per worker
     /// (for the rest of the pool's life: the old one-parser-per-worker memory use). A parser
     /// that never became ready stays failed.
@@ -727,13 +816,21 @@ impl PoolParser {
 /// a document full of pathological pages cannot spawn threads without bound. If every worker is
 /// retired after that budget is spent, pending and future requests fail explicitly instead of
 /// waiting forever.
+/// The document bytes and configuration a pool's workers read. Replacing this lets an edit keep
+/// the worker threads and parsed-document caches instead of spawning a new pool.
+#[derive(Clone)]
+struct Source {
+    bytes: Arc<Vec<u8>>,
+    config: RenderConfig,
+    generation: u64,
+}
+
 pub struct RenderPool {
     shared: Arc<Shared>,
     wake: Mutex<Vec<SyncSender<()>>>,
     results: ResultReceiver,
     results_tx: Arc<WorkQueue>,
-    bytes: Arc<Vec<u8>>,
-    config: RenderConfig,
+    source: Arc<Mutex<Source>>,
     _workers: Mutex<Vec<JoinHandle<()>>>,
     stuck_after: std::time::Duration,
     replacements_left: Mutex<usize>,
@@ -753,13 +850,13 @@ impl RenderPool {
         let shared = Arc::new(Shared::default());
         let results_tx = shared.queue.clone();
         let results = ResultReceiver(shared.queue.clone());
+        let source = Arc::new(Mutex::new(Source { bytes: bytes.clone(), config: config.clone(), generation: 0 }));
         let mut pool = Self {
             shared,
             wake: Mutex::new(Vec::new()),
             results,
             results_tx,
-            bytes: bytes.clone(),
-            config: config.clone(),
+            source,
             _workers: Mutex::new(Vec::new()),
             stuck_after: STUCK_AFTER,
             replacements_left: Mutex::new(threads),
@@ -789,8 +886,8 @@ impl RenderPool {
                 (busy.len() - 1, stop)
             };
             let (wtx, wrx) = sync_channel::<()>(1);
-            let (shared, out, bytes, config) = (self.shared.clone(), self.results_tx.clone(), self.bytes.clone(), self.config.clone());
-            match std::thread::Builder::new().name(format!("pdfcraft-render-{id}")).spawn(move || worker(id, bytes, config, shared, wrx, out, stop)) {
+            let (shared, out, source) = (self.shared.clone(), self.results_tx.clone(), self.source.clone());
+            match std::thread::Builder::new().name(format!("pdfcraft-render-{id}")).spawn(move || worker(id, source, shared, wrx, out, stop)) {
                 Ok(h) => {
                     lock(&self.wake).push(wtx);
                     lock(&self._workers).push(h);
@@ -807,6 +904,30 @@ impl RenderPool {
     /// A pool without worker threads: renders inside `try_recv` (the web path; also used in tests).
     pub fn new_inline(bytes: Arc<Vec<u8>>, config: RenderConfig) -> Self {
         Self::with_mode(bytes, 0, config, true)
+    }
+
+    /// Replace the document bytes and configuration without recreating worker threads. Workers
+    /// discard their parsed document/cache on the next request and parse the new source. The
+    /// current queue is cleared; the next `set_queue` supplies the new view's requests.
+    pub fn replace_bytes(&self, bytes: Arc<Vec<u8>>, config: RenderConfig) {
+        {
+            let mut source = lock(&self.source);
+            source.bytes = bytes.clone();
+            source.config = config.clone();
+            source.generation = source.generation.wrapping_add(1);
+        }
+        let obsolete = self.shared.queue.replace(Vec::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.shared.cancel_in_flight(&obsolete);
+            // The shared parser holds the old bytes; force every worker onto its private parser,
+            // which reads the new source.
+            self.shared.parser.replace_source();
+        }
+        if let Some(inline) = &self.inline {
+            *inline.borrow_mut() = PageRenderer::new(bytes, config);
+        }
+        self.wake_workers();
     }
 
     /// `true` when rendering happens on the caller's thread (no worker threads available).
@@ -839,6 +960,11 @@ impl RenderPool {
         #[cfg(not(target_arch = "wasm32"))]
         self.shared.cancel_in_flight(&obsolete);
         self.wake_workers();
+    }
+
+    /// Whether the pool has no desired work (it was just given new bytes, or nothing was asked).
+    pub fn queue_is_empty(&self) -> bool {
+        self.shared.queue.is_empty()
     }
 
     fn wake_workers(&self) {
@@ -1011,21 +1137,28 @@ fn worker_settings(config: &RenderConfig, stop: &Arc<std::sync::atomic::AtomicBo
 #[cfg(not(target_arch = "wasm32"))]
 fn worker(
     id: usize,
-    bytes: Arc<Vec<u8>>,
-    config: RenderConfig,
+    source: Arc<Mutex<Source>>,
     shared: Arc<Shared>,
     wake: Receiver<()>,
     out: Arc<WorkQueue>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let warnings = Arc::new(Mutex::new(Vec::new()));
-    // A local cell keeps Pdf borrows used by RenderCache stable. Drop both on an
-    // epoch change/panic before publishing an error or taking another request.
+    // A local cell keeps Pdf borrows used by RenderCache stable. Drop both on a
+    // source-generation change/panic before publishing an error or taking another request.
     loop {
         let reset_result = {
             let parsed = std::cell::OnceCell::new();
+            let mut surface: Option<Surface> = None;
             loop {
-                if parsed.get().is_some_and(|(_, _, shared_generation)| *shared_generation) && !shared.parser.valid.load(Ordering::Acquire) {
+                let (bytes, config, generation) = {
+                    let source = lock(&source);
+                    (source.bytes.clone(), source.config.clone(), source.generation)
+                };
+                if parsed.get().is_some_and(|(_, _, _, parsed_generation)| *parsed_generation != generation) {
+                    break None;
+                }
+                if parsed.get().is_some_and(|(_, _, shared_generation, _)| *shared_generation) && !shared.parser.valid.load(Ordering::Acquire) {
                     break None;
                 }
                 let next = shared.queue.pop();
@@ -1037,6 +1170,12 @@ fn worker(
                 };
                 if shared.queue.cancel_obsolete(req) {
                     continue;
+                }
+                // The source may have been replaced between reading its generation and taking
+                // this request; do not render the old bytes for the new view.
+                if lock(&source).generation != generation {
+                    shared.queue.retry(req);
+                    break None;
                 }
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 if let Some(gate) = lock(&shared.busy_publish_gate).clone().filter(|gate| same_request(gate.request, req)) {
@@ -1066,7 +1205,7 @@ fn worker(
                 shared.stats.record_request(req);
                 let stage = parsed.get().map_or(
                     BusyStage::Parsing,
-                    |(_, _, shared_generation)| {
+                    |(_, _, shared_generation, _)| {
                         if *shared_generation { BusyStage::SharedRender } else { BusyStage::Private }
                     },
                 );
@@ -1115,7 +1254,7 @@ fn worker(
                         }) {
                             Some(pdf) => {
                                 let shared_generation = pdf.is_some();
-                                (pdf, RenderCache::new(), shared_generation)
+                                (pdf, RenderCache::new(), shared_generation, generation)
                             }
                             None => {
                                 let pdf = if !request_cancelled.load(Ordering::Acquire)
@@ -1126,7 +1265,7 @@ fn worker(
                                 } else {
                                     None
                                 };
-                                (pdf, RenderCache::new(), false)
+                                (pdf, RenderCache::new(), false, generation)
                             }
                         }
                     };
@@ -1141,7 +1280,7 @@ fn worker(
                     let _ = parsed.set(init);
                 }
                 // Set just above when it was empty.
-                let Some((pdf, cache, shared_generation)) = parsed.get() else {
+                let Some((pdf, cache, shared_generation, _)) = parsed.get() else {
                     if lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none()) {
                         return;
                     }
@@ -1209,7 +1348,7 @@ fn worker(
                         panic!("injected page panic");
                     }
                     match pdf {
-                        Some(pdf) => render_page(pdf, cache, &settings, &config, req),
+                        Some(pdf) => render_with_surface(pdf, cache, &settings, &config, req, &mut surface),
                         None => Err(("the document could not be parsed".into(), false)),
                     }
                 }))
@@ -1696,16 +1835,17 @@ mod tests {
                 lock(&shared.stuck).insert(req.into());
             }
             let bytes = Arc::new(ONE_PAGE.to_vec());
-            let source = Arc::downgrade(&bytes);
+            let weak = Arc::downgrade(&bytes);
             let (wake_tx, wake_rx) = sync_channel(1);
             let out = shared.queue.clone();
             let results = ResultReceiver(shared.queue.clone());
             // A dropped pool disconnects this channel. Running synchronously makes this check
             // deterministic even when a worker starts after the pool has already been replaced.
             drop(wake_tx);
-            worker(0, bytes, RenderConfig::default(), shared.clone(), wake_rx, out, Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            let source = Arc::new(Mutex::new(Source { bytes, config: RenderConfig::default(), generation: 0 }));
+            worker(0, source, shared.clone(), wake_rx, out, Arc::new(std::sync::atomic::AtomicBool::new(false)));
             assert_eq!(shared.parses.load(std::sync::atomic::Ordering::Relaxed), 0);
-            assert!(source.upgrade().is_none(), "retired workers release their source bytes");
+            assert!(weak.upgrade().is_none(), "retired workers release their source bytes");
             if skipped {
                 assert!(results.try_recv().unwrap().error.as_deref().is_some_and(|e| e.contains("skipped earlier")));
             }
@@ -3483,6 +3623,29 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn replacing_pool_bytes_reuses_its_workers() {
+        let make = |word: &str| {
+            let body = format!("BT /F1 12 Tf 20 70 Td ({word}) Tj ET\n");
+            let pdf = format!(
+                "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n4 0 obj << /Length {} >> stream\n{body}endstream endobj\n5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF",
+                body.len()
+            );
+            Arc::new(pdf.into_bytes())
+        };
+        let req = |tag| RenderRequest { page: 0, kind: RequestKind::Text, tile: None, scale: 1.0, tag, ..Default::default() };
+        let pool = RenderPool::new(make("Hello"), 1, RenderConfig::default());
+        pool.set_queue(vec![req(1)]);
+        let first = receive_before_deadline(&pool);
+        assert!(first.text.as_ref().is_some_and(|t| t.plain_text().contains("Hello")));
+        let workers = lock(&pool.shared.busy).len();
+        pool.replace_bytes(make("World"), RenderConfig::default());
+        pool.set_queue(vec![req(2)]);
+        let second = receive_before_deadline(&pool);
+        assert!(second.text.as_ref().is_some_and(|t| t.plain_text().contains("World")), "new source was parsed");
+        assert_eq!(lock(&pool.shared.busy).len(), workers, "the pool kept its worker");
+    }
+
+    #[test]
     fn dropping_the_pool_cancels_its_renders() {
         const TEXT: &[u8] = b"%PDF-1.7
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
@@ -3496,7 +3659,7 @@ trailer << /Root 1 0 R >>
 %%EOF";
         let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
         let flag = lock(&pool.shared.stop).first().cloned().expect("one worker");
-        let settings = worker_settings(&pool.config, &flag);
+        let settings = worker_settings(&RenderConfig::default(), &flag);
         assert!(settings.cancelled.as_ref().is_some_and(|c| Arc::ptr_eq(c, &flag)));
         let shapes = Pdf::new(Arc::new(ONE_PAGE.to_vec())).expect("parses");
         let text = Pdf::new(Arc::new(TEXT.to_vec())).expect("parses");

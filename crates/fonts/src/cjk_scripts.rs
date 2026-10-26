@@ -2,8 +2,10 @@
 //! are embedded whole, and the size cap for the others. The build script includes this file with
 //! `#[path]` and the crate's tests use it as a module, so the two can't drift.
 
-/// The CJK families embedded whole: the Japanese faces documents and the renderer use.
-pub const WHOLE_CJK_FAMILIES: [&str; 3] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho"];
+/// The CJK families embedded whole: the Japanese faces documents and the renderer use, and
+/// Noto Sans CJK SC for Simplified Chinese document text (its 16 MB is too large for the
+/// `MAX_OTHER_CJK_BYTES` rule, but Chinese text cannot be written without it).
+pub const WHOLE_CJK_FAMILIES: [&str; 4] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho", "Noto Sans CJK SC"];
 
 /// Any other CJK face over this size is left out.
 pub const MAX_OTHER_CJK_BYTES: u64 = 4 << 20;

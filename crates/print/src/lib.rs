@@ -365,7 +365,19 @@ pub fn media_option(index: usize) -> Option<(String, String)> {
 /// sideways on a letter or A4 sheet), counting each text-showing operator once; form XObjects
 /// are followed a few levels deep.
 pub fn text_reads_up(doc: &Document, index: usize) -> bool {
-    let Some(page) = pdfcraft_model::pages(doc).into_iter().nth(index) else { return false };
+    let pages = pdfcraft_model::pages(doc);
+    let Some(page) = pages.get(index) else { return false };
+    text_reads_up_page(doc, page)
+}
+
+/// The same answer for several pages, walking the page tree once. A print dialog asks for every
+/// page; doing that through [`text_reads_up`] was quadratic in a large document.
+pub fn text_reads_up_many(doc: &Document, indexes: &[usize]) -> Vec<bool> {
+    let pages = pdfcraft_model::pages(doc);
+    indexes.iter().map(|&index| pages.get(index).is_some_and(|page| text_reads_up_page(doc, page))).collect()
+}
+
+fn text_reads_up_page(doc: &Document, page: &pdfcraft_model::Page) -> bool {
     let to_display = Matrix(page.view_matrix(doc)).invert().unwrap_or_default();
     let res = page.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
     let mut score = 0i64;

@@ -844,6 +844,7 @@ pub struct PdfCraftApp {
     /// Compare files: the chosen older document and the last result.
     pub compare_old: Option<DocId>,
     pub compare: Option<compare_ui::CompareState>,
+    pub(crate) compare_job: Option<compare_ui::CompareJob>,
     /// The JavaScript console and the Document JavaScripts draft.
     pub js_console: js_ui::JsConsole,
     pub doc_js: js_ui::DocJsDraft,
@@ -981,6 +982,7 @@ pub struct PdfCraftApp {
     pub redact_before: Option<RedactPrefs>,
     pub redact_pages_draft: RedactPagesDraft,
     pub redact_search: RedactSearchDraft,
+    pub(crate) redact_search_job: Option<redact_ui::RedactSearchJob>,
     pub hidden_draft: HiddenDraft,
     pub print_draft: PrintDraft,
     pub link_draft: Option<LinkDraft>,
@@ -1215,6 +1217,7 @@ impl PdfCraftApp {
             pdfa: Default::default(),
             compare_old: None,
             compare: None,
+            compare_job: None,
             js_console: Default::default(),
             doc_js: Default::default(),
             a11y: a11y_ui::A11yState::default(),
@@ -1296,6 +1299,7 @@ impl PdfCraftApp {
             redact_before: None,
             redact_pages_draft: RedactPagesDraft::default(),
             redact_search: RedactSearchDraft::default(),
+            redact_search_job: None,
             hidden_draft: HiddenDraft::default(),
             print_draft: PrintDraft::default(),
             link_draft: None,
@@ -3640,6 +3644,8 @@ impl eframe::App for PdfCraftApp {
             }
         }
         self.poll_export();
+        self.poll_compare();
+        self.poll_redact_search();
         self.auto_ocr_scanned_page();
         self.poll_ocr();
         self.poll_optimize();
@@ -3667,7 +3673,7 @@ impl eframe::App for PdfCraftApp {
             .active
             .and_then(|i| crate::canvas::tab_label(self, i))
             .or_else(|| self.combine_showing().then(|| tl!("Combine files").to_owned()))
-            .map_or_else(|| "PdfCraft".to_owned(), |name| format!("{name} — PdfCraft"));
+            .map_or_else(|| "PDF Forge".to_owned(), |name| format!("{name} — PDF Forge"));
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;

@@ -131,6 +131,12 @@ impl Default for WorkQueue {
 }
 
 impl WorkQueue {
+    /// Whether no request is currently desired. A pool whose bytes were replaced has an empty
+    /// queue until its owner supplies the new view's requests.
+    pub(super) fn is_empty(&self) -> bool {
+        lock(&self.state).desired.is_empty()
+    }
+
     pub(super) fn replace(&self, requests: Vec<RenderRequest>) -> Vec<RenderRequest> {
         let mut state = lock(&self.state);
         if state.closed {

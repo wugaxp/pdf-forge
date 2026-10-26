@@ -319,7 +319,8 @@ fn scope_of(edit: &Edit) -> Scope {
         | Edit::AddHeaderFooter { .. }
         | Edit::AddWatermark { .. }
         | Edit::AddBackground { .. }
-        | Edit::RemoveMarks { .. } => Scope::Content,
+        | Edit::RemoveMarks { .. }
+        | Edit::AddOcrText { .. } => Scope::Content,
         Edit::Batch { edits, .. } => {
             let mut scopes = edits.iter().map(scope_of);
             let first = scopes.next().unwrap_or(Scope::Full);
@@ -2312,6 +2313,68 @@ fn unrestricted(p: &pdfcraft_cos::Permissions) -> bool {
     p.owner || p.bits & ALL == ALL
 }
 
+/// Whether a certification signature's DocMDP level allows `edit`: P=1 none, P=2 form filling
+/// and signing, P=3 also annotations and links.
+fn certification_allows(edit: &Edit, level: u8) -> bool {
+    fn form(edit: &Edit) -> bool {
+        match edit {
+            Edit::SetFieldValue { .. } | Edit::ResetForm { .. } | Edit::ApplyScriptChanges { .. } => true,
+            Edit::Batch { edits, .. } => edits.iter().all(form),
+            _ => false,
+        }
+    }
+    fn annotation(edit: &Edit) -> bool {
+        match edit {
+            Edit::AddAnnotation(_)
+            | Edit::AddMeasurement(_)
+            | Edit::AddCustomStamp { .. }
+            | Edit::DeleteAnnotation { .. }
+            | Edit::SetAnnotationContents { .. }
+            | Edit::ReplyToAnnotation { .. }
+            | Edit::SetAnnotationStatus { .. }
+            | Edit::MarkAnnotation { .. }
+            | Edit::LockAnnotation { .. }
+            | Edit::MoveAnnotation { .. }
+            | Edit::ReshapeAnnotation { .. }
+            | Edit::ResizeAnnotation { .. }
+            | Edit::StyleAnnotation { .. }
+            | Edit::FillAnnotation { .. }
+            | Edit::FontSizeAnnotation { .. }
+            | Edit::SetAnnotationInfo { .. }
+            | Edit::ReplaceText { .. }
+            | Edit::EraseInk { .. }
+            | Edit::SetMeasurementScale { .. }
+            | Edit::AddLink { .. }
+            | Edit::SetLink { .. }
+            | Edit::DeleteLink { .. }
+            | Edit::RemoveLinks { .. }
+            | Edit::AddLinks { .. } => true,
+            Edit::Batch { edits, .. } => edits.iter().all(annotation),
+            _ => false,
+        }
+    }
+    match level {
+        1 => false,
+        2 => form(edit),
+        3 => form(edit) || annotation(edit),
+        _ => true,
+    }
+}
+
+/// Signing or timestamping changes the file even when it adds no visible content; P=1 forbids it.
+fn check_certification_signature(doc: &Document, action: &str) -> Result<(), EditError> {
+    let Some(sig) = doc.signatures.iter().find(|s| s.signed && s.certify.is_some()) else { return Ok(()) };
+    let level = sig.certify.unwrap_or(0);
+    if level == 1 { Err(EditError::Certification(level, action.to_owned())) } else { Ok(()) }
+}
+
+/// A certification signature is a write barrier, not only a post-hoc verdict.
+fn check_certification(doc: &Document, edit: &Edit) -> Result<(), EditError> {
+    let Some(sig) = doc.signatures.iter().find(|s| s.signed && s.certify.is_some()) else { return Ok(()) };
+    let level = sig.certify.unwrap_or(0);
+    if certification_allows(edit, level) { Ok(()) } else { Err(EditError::Certification(level, edit.label().as_str().to_owned())) }
+}
+
 /// Whether the opening password allows an edit (§7.6.4.2, Table 22).
 fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), EditError> {
     match edit {
@@ -3208,6 +3271,8 @@ pub enum EditError {
     SignedRewrite(String),
     #[error("this document is signed: rewriting it would invalidate its signatures (save it incrementally instead)")]
     Signed,
+    #[error("this document is certified (DocMDP P={0}), and the certification doesn't allow {1}")]
+    Certification(u8, String),
     #[error("{0}")]
     Invalid(String),
 }
@@ -3955,6 +4020,7 @@ impl Session {
         let today = self.today();
         let js_off = self.js_off;
         let doc = self.doc_mut(id)?;
+        check_certification(doc, &edit)?;
         doc.edit_notices.clear();
         let name = doc.name.clone();
         let is_xfa = doc.info.xfa.is_some();
@@ -4243,7 +4309,8 @@ impl Session {
             return Self::refresh_links(doc);
         }
         // Metadata edits keep the renderer, which holds the working file anyway.
-        if scope != Scope::Metadata {
+        let reuse_pool = Self::can_reuse_pool(doc);
+        if scope != Scope::Metadata && !reuse_pool {
             Self::release_working(doc);
         }
         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
@@ -4272,9 +4339,15 @@ impl Session {
             doc.bytes = bytes;
             return Ok(());
         }
-        let mut form = pdfcraft_forms::fields(&editor.cos);
-        xfa::mark_script_buttons(&editor.cos, &mut form);
-        let form = Arc::new(form);
+        // Comment edits do not touch the form: reading every field here made a comment update
+        // pay a full field-tree walk, and a large form pay it on every edit.
+        let form = if scope == Scope::Form {
+            let mut form = pdfcraft_forms::fields(&editor.cos);
+            xfa::mark_script_buttons(&editor.cos, &mut form);
+            Some(Arc::new(form))
+        } else {
+            None
+        };
         match scope {
             Scope::Metadata => return Ok(()),
             Scope::Comments => {
@@ -4283,6 +4356,7 @@ impl Session {
                 doc.links = OnceLock::new();
             }
             Scope::Form => {
+                let Some(form) = form.as_ref() else { return Ok(()) };
                 // PERF: keystroke path, index once. A linear find per field is O(F^2);
                 // forms reach 10k fields.
                 let mut by_name = std::collections::HashMap::with_capacity(form.len());
@@ -4301,6 +4375,7 @@ impl Session {
                         };
                     }
                 }
+                doc.form = Arc::clone(form);
             }
             Scope::Links => return Self::refresh_links(doc),
             // Handled above; kept as a full refresh so the match stays total.
@@ -4309,11 +4384,15 @@ impl Session {
             Scope::Content => return Self::refresh_content(doc, None),
         }
         doc.info.file_size = bytes.len();
-        doc.form = form;
+        let needs_display = !doc.info.annotations.is_empty() || !doc.form.is_empty() || pdfcraft_forms::need_appearances(&editor.cos);
         let signatures = if doc.signatures.is_empty() { Vec::new() } else { signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache) };
-        doc.display = display_bytes(Some(editor), &bytes);
+        doc.display = if needs_display { display_bytes(Some(editor), &bytes) } else { bytes.clone() };
         doc.signatures = Arc::new(signatures);
-        doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        if reuse_pool {
+            doc.renderer.replace_bytes(doc.display.clone(), doc.config.clone());
+        } else {
+            doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        }
         doc.bytes = bytes;
         Ok(())
     }
@@ -4352,7 +4431,14 @@ impl Session {
     /// from undo/redo, re-reads both: always correct, rarely paid). The cached display
     /// appearances are kept: content edits leave every annotation dictionary alone.
     fn refresh_content(doc: &mut Document, edit: Option<&Edit>) -> Result<(), EditError> {
-        Self::release_working(doc);
+        let reuse_pool = Self::can_reuse_pool(doc);
+        if !reuse_pool {
+            Self::release_working(doc);
+        }
+        #[cfg(test)]
+        if reuse_pool {
+            check_refresh_panic();
+        }
         sync_xfa_state(doc);
         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
         let bytes = if editor.cos.is_modified() {
@@ -4360,17 +4446,25 @@ impl Session {
         } else {
             editor.cos.bytes().clone()
         };
-        // The edit must still leave a file the viewer can open; anything else rolls back above.
-        pdfcraft_render::check_pages(bytes.clone(), doc.password.as_deref(), doc.info.pages.len()).map_err(|e| EditError::Reopen(e.to_string()))?;
+        // The page tree must still be readable; the full hayro parse is left to the renderer
+        // that consumes these bytes, instead of running on every content edit.
+        if pdfcraft_model::pages(&editor.cos).len() != doc.info.pages.len() {
+            return Err(EditError::Reopen("the edit changed the page count".into()));
+        }
         let (touches_added, touches_marks) = Self::content_refresh_lists(edit);
         if touches_added || touches_marks {
             doc.marker_scan = OnceLock::new();
         }
         doc.info.file_size = bytes.len();
         let signatures = if doc.signatures.is_empty() { Vec::new() } else { signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache) };
-        doc.display = display_bytes(Some(editor), &bytes);
+        let needs_display = !doc.info.annotations.is_empty() || !doc.form.is_empty() || pdfcraft_forms::need_appearances(&editor.cos);
+        doc.display = if needs_display { display_bytes(Some(editor), &bytes) } else { bytes.clone() };
         doc.signatures = Arc::new(signatures);
-        doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        if reuse_pool {
+            doc.renderer.replace_bytes(doc.display.clone(), doc.config.clone());
+        } else {
+            doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        }
         doc.bytes = bytes;
         doc.fonts_stale = true;
         Ok(())
@@ -4400,6 +4494,14 @@ impl Session {
         doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
     }
 
+    /// Keeping a pool's threads and parser is cheap for ordinary documents; for a very large
+    /// one the old pool would hold another copy of the file while the new one is written.
+    const POOL_REUSE_LIMIT: usize = 16 << 20;
+
+    fn can_reuse_pool(doc: &Document) -> bool {
+        !doc.renderer.is_inline() && doc.display.len() <= Self::POOL_REUSE_LIMIT
+    }
+
     /// Rebuild working bytes, inspection and renderer from the current edit state.
     fn refresh(doc: &mut Document) -> Result<(), EditError> {
         Self::refresh_with_indexes(doc, true, true)
@@ -4416,7 +4518,14 @@ impl Session {
         if let Some(editor) = doc.editor.as_mut() {
             editor.appearances.clear();
         }
-        Self::release_working(doc);
+        let reuse_pool = Self::can_reuse_pool(doc);
+        if !reuse_pool {
+            Self::release_working(doc);
+        }
+        #[cfg(test)]
+        if reuse_pool {
+            check_refresh_panic();
+        }
         sync_xfa_state(doc);
         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
         let bytes = if editor.cos.is_modified() {
@@ -4452,9 +4561,14 @@ impl Session {
             doc.links = OnceLock::new();
         }
         let signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
-        doc.display = display_bytes(Some(editor), &bytes);
+        let needs_display = !doc.info.annotations.is_empty() || !doc.form.is_empty() || pdfcraft_forms::need_appearances(&editor.cos);
+        doc.display = if needs_display { display_bytes(Some(editor), &bytes) } else { bytes.clone() };
         doc.signatures = Arc::new(signatures);
-        doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        if reuse_pool {
+            doc.renderer.replace_bytes(doc.display.clone(), doc.config.clone());
+        } else {
+            doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());
+        }
         doc.bytes = bytes;
         Ok(())
     }
@@ -4521,6 +4635,9 @@ impl Session {
     pub fn mark_saved(&mut self, id: DocId, bytes: Arc<Vec<u8>>, path: Option<String>) -> Result<(), EditError> {
         let doc = self.doc_mut(id)?;
         if let Some(editor) = doc.editor.as_mut() {
+            // Undo after a full-save-required edit (redaction, sanitize, a changed password)
+            // must not be able to write the removed content back as a later revision.
+            let destructive = editor.cos.full_save_required() || editor.cos.encryption_changed();
             // An encrypted file needs the password it is protected with now (the owner
             // password when known, so saving never downgrades this session's rights).
             let keys = editor.keys.clone();
@@ -4536,6 +4653,12 @@ impl Session {
             editor.saved = bytes;
             editor.saved_keys = keys;
             editor.unsaved_file = false;
+            if destructive {
+                // The saved file is the only safe basis now. Keeping snapshots from before the
+                // rewrite would let Undo + Save append the removed content as a new revision.
+                editor.undo.clear();
+                editor.redo.clear();
+            }
         }
         if let Some(p) = path {
             doc.name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
@@ -4800,7 +4923,13 @@ impl Session {
                 Err(_) => return Vec::new(),
             },
         };
-        (0..doc.info.pages.len()).map(|i| pages.contains(&i) && pdfcraft_print::text_reads_up(&cos, i)).collect()
+        let wanted: std::collections::HashSet<usize> = pages.iter().copied().collect();
+        let requested: Vec<usize> = (0..doc.info.pages.len()).filter(|i| wanted.contains(i)).collect();
+        let mut up = vec![false; doc.info.pages.len()];
+        for (index, value) in requested.iter().zip(pdfcraft_print::text_reads_up_many(&cos, &requested)) {
+            up[*index] = value;
+        }
+        up
     }
 
     /// Combine whole files, in order, into new PDF bytes (one bookmark per file).
@@ -5303,6 +5432,7 @@ impl Session {
     /// `opts.date` takes the session clock.
     pub fn sign(&self, doc: DocId, id: &pdfcraft_sign::DigitalId, mut opts: SignOptions) -> Result<Arc<Vec<u8>>, EditError> {
         let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        check_certification_signature(d, "Digitally sign")?;
         // Encrypted documents are signed under their permissions (the signer checks them).
         let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
         if opts.date.is_empty() {
@@ -5323,6 +5453,7 @@ impl Session {
         tsa: &dyn pdfcraft_sign::TimestampAuthority,
     ) -> Result<Arc<Vec<u8>>, EditError> {
         let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        check_certification_signature(d, "Digitally sign")?;
         let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
         if opts.date.is_empty() {
             opts.date = self.signing_date();
@@ -5338,6 +5469,7 @@ impl Session {
     /// current state. An empty `date` takes the session clock; the transport is the caller's.
     pub fn timestamp_document(&self, doc: DocId, tsa: &dyn pdfcraft_sign::TimestampAuthority, date: String) -> Result<Arc<Vec<u8>>, EditError> {
         let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        check_certification_signature(d, "Add a document timestamp")?;
         let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
         let date = if date.is_empty() { self.signing_date() } else { date };
         let cos = writable(&editor.cos)?;
@@ -5350,6 +5482,7 @@ impl Session {
     /// (PAdES B-LT): an incremental update that never rewrites signed bytes.
     pub fn embed_ltv(&self, doc: DocId, evidence: &pdfcraft_sign::dss::Evidence) -> Result<Arc<Vec<u8>>, EditError> {
         let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        check_certification_signature(d, "Add revocation evidence")?;
         let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
         let cos = writable(&editor.cos)?;
         let embedded = Arc::new(pdfcraft_sign::dss::embed(&cos, evidence)?);

@@ -3,9 +3,9 @@ Copyright (c) 2026 ArtCraft Team and the PdfCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCraft Team. They are
-not open source and are not covered by the license above; their terms are in
-docs/brand/LICENSE-brand.txt.
+PDF Forge is a personal fork of PdfCraft. This fork does not include the ArtCraft
+name, wordmark or logo files. The upstream PdfCraft copyright and license notices
+are retained below.
 
 Third-party material
 
@@ -24,7 +24,8 @@ list (author, source, license) is in ATTRIBUTION.md.
   (CRAFT_FONTS_DIR) that is not part of this repository. Builds made with it, which includes every
   official release, embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, Shippori Mincho,
-  BIZ UDMincho; the web build only BIZ UDPGothic Regular) under the SIL Open Font License 1.1. Those
+  BIZ UDMincho, Noto Sans CJK SC; the web build only BIZ UDPGothic Regular) under the SIL Open Font
+  License 1.1. Those
   packages carry each font's licence as OFL-<family>.txt. Builds made with the craft-fonts revision
   pinned in .github/workflows/ also include Noto Sans Thai (in the web build too), Copyright 2022
   The Noto Project Authors (https://github.com/notofonts/thai), under SIL OFL 1.1; its licence is
