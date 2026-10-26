@@ -496,6 +496,7 @@ fn content_draws<C: AsRef<[u8]>>(doc: &Document, content: &[C], xo: &Dict) -> Dr
 /// left as it is for them. Retired properties are likewise unlinked only when none of the
 /// holder's pages or inheriting forms names them. Fails closed when use cannot be determined.
 pub(crate) fn unlink_doomed(doc: &mut Document, doomed: &[ObjRef], retired_properties: &[Object]) -> Result<(), RedactError> {
+    crate::type3::unlink_type3(doc)?;
     if doomed.is_empty() && retired_properties.is_empty() {
         return Ok(());
     }
@@ -806,7 +807,7 @@ fn clip_out(rects: &[[f64; 4]], ctm: &Matrix, around: [f64; 4]) -> Option<Vec<Op
     Some(ops)
 }
 
-fn resource_ops<C: AsRef<[u8]>>(doc: &Document, res: &Dict, content: &[C]) -> Result<Vec<Op>, CosError> {
+pub(crate) fn resource_ops<C: AsRef<[u8]>>(doc: &Document, res: &Dict, content: &[C]) -> Result<Vec<Op>, CosError> {
     let parsed = Pieces::join(content).parse();
     if parsed.skipped > 0 || parsed.ops.len() > 2_000_000 {
         return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect property resources".into() });
@@ -1487,6 +1488,10 @@ fn xobject(
                     }
                 }
                 if let Err(error) = prune_form_resources(doc, &mut cleaned_res, content) {
+                    out.error = Some(error);
+                    return None;
+                }
+                if let Err(error) = crate::type3::prune_type3_from_resources(doc, &mut cleaned_res, content) {
                     out.error = Some(error);
                     return None;
                 }
