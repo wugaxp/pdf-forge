@@ -341,9 +341,9 @@ fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     h.run_steps(2);
     let p = at(&h, 40.0, 300.0);
     click(&mut h, p);
-    h.event(egui::Event::Text("Hello の".into()));
+    h.event(egui::Event::Text("Hello 😀".into()));
     h.run_steps(2);
-    h.get_by_label_contains("can't draw “の” (U+306E)");
+    h.get_by_label_contains("can't draw “😀” (U+1F600)");
     if let Ok(dir) = std::env::var("PDFCRAFT_SHOTS") {
         h.render().unwrap().save(format!("{dir}/undrawable-text.png")).unwrap();
     }
@@ -351,12 +351,12 @@ fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     h.run_steps(3);
     assert!(texts(&h).is_empty(), "nothing was written to the page");
     let draft = h.state().views[0].content.draft.as_ref().map(|d| d.text.clone());
-    assert_eq!(draft.as_deref(), Some("Hello の"), "the typed text is kept");
+    assert_eq!(draft.as_deref(), Some("Hello 😀"), "the typed text is kept");
     // A click elsewhere on the page doesn't finish it, or replace it with a new box.
     let elsewhere = at(&h, 40.0, 150.0);
     click(&mut h, elsewhere);
     let draft = h.state().views[0].content.draft.as_ref().map(|d| d.text.clone());
-    assert_eq!(draft.as_deref(), Some("Hello の"), "clicking elsewhere keeps the typed text");
+    assert_eq!(draft.as_deref(), Some("Hello 😀"), "clicking elsewhere keeps the typed text");
     assert!(texts(&h).is_empty());
     // Once the text can be drawn, Done adds it (Done took the focus, so edit the draft directly).
     if let Some(d) = h.state_mut().views[0].content.draft.as_mut() {

@@ -6,6 +6,7 @@ use pdfcraft_ui_egui::theme;
 
 const JAPANESE: &str = "日本語の文字";
 const CHINESE: &str = "简体中文欢迎";
+const KOREAN: &str = "한국어 문서";
 const ARABIC: &str = "واحد اثنين";
 const TELUGU: &str = "తెలుగు ఫైల్";
 const HEBREW: &str = "ייפוי כח.pdf";
@@ -44,6 +45,47 @@ fn japanese_ui_text_uses_craft_fonts() {
     // Real glyphs are about a full em wide each; tofu boxes and missing glyphs are not.
     for w in layout_widths(&mut fonts, JAPANESE) {
         assert!(w > 13.0 * 0.8 * JAPANESE.chars().count() as f32, "{w}");
+    }
+}
+
+/// Built with craft-fonts, Korean text renders with real glyphs (no tofu) in every family, from
+/// the NanumGothic face placed after the app's own fonts.
+#[test]
+fn korean_ui_text_uses_craft_fonts() {
+    if pdfcraft_fonts::ui_korean_fonts().is_empty() {
+        eprintln!("skipping korean_ui_text_uses_craft_fonts: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+        return;
+    }
+    let korean: Vec<String> = pdfcraft_fonts::ui_korean_fonts().iter().map(|f| f.name()).collect();
+    let defs = theme::font_definitions();
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        let stack = &defs.families[&family];
+        let first_ko = stack.iter().position(|n| korean.contains(n)).expect("a Korean face is a fallback");
+        let own = stack.iter().position(|n| n == "Inter" || n == "JetBrainsMono").expect("the app's own font");
+        assert!(own < first_ko, "{family:?}: {stack:?}");
+    }
+    let mut fonts = Fonts::new(TextOptions::default(), defs);
+    for id in families() {
+        assert!(fonts.has_glyphs(&id, KOREAN), "{id:?} lacks {KOREAN}");
+    }
+    for w in layout_widths(&mut fonts, KOREAN) {
+        assert!(w > 13.0 * 0.8 * KOREAN.chars().count() as f32, "{w}");
+    }
+}
+
+/// A Traditional Chinese face, when the build input has one, joins the stack after the app's own
+/// fonts (the Simplified face still draws shared ideographs without it).
+#[test]
+fn traditional_chinese_faces_join_the_interface_stack_when_present() {
+    let hant: Vec<String> = pdfcraft_fonts::ui_traditional_chinese_fonts().iter().map(|f| f.name()).collect();
+    if hant.is_empty() {
+        eprintln!("skipping traditional_chinese_faces_join_the_interface_stack_when_present: no Hant face bundled");
+        return;
+    }
+    let defs = theme::font_definitions();
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        let stack = &defs.families[&family];
+        assert!(stack.iter().any(|n| hant.contains(n)), "{family:?}: {stack:?}");
     }
 }
 

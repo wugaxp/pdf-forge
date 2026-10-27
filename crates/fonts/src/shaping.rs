@@ -32,6 +32,17 @@ pub enum ShapedScript {
     Thai,
     /// Simplified Chinese: one glyph per character, from the `Hans` craft-fonts face.
     Cjk,
+    /// Traditional Chinese: one glyph per character, from the `Hant` face. Falls back to
+    /// [`ShapedScript::Cjk`] when the build has no Traditional Chinese face.
+    Hant,
+    /// Japanese: one glyph per character from the `Jpan` face of the text's style, kana and the
+    /// kanji beside them alike.
+    Jpan {
+        serif: bool,
+        bold: bool,
+    },
+    /// Korean: one glyph per character (Hangul syllables are precomposed) from the `Kore` face.
+    Kore,
 }
 
 impl ShapedScript {
@@ -41,20 +52,32 @@ impl ShapedScript {
             Self::Hebrew => crate::document_hebrew_font(false),
             Self::Thai => crate::document_thai_font(),
             Self::Cjk => crate::document_chinese_font(),
+            Self::Hant => crate::document_traditional_chinese_font(),
+            Self::Jpan { serif, bold } => crate::document_japanese_font_for_style(serif, bold),
+            Self::Kore => crate::document_korean_font(),
         }
     }
 }
 
+type Face = OnceLock<Option<(FontRef<'static>, ShaperData)>>;
+
 fn face(script: ShapedScript) -> Option<&'static (FontRef<'static>, ShaperData)> {
-    static FACE: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
-    static HEBREW: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
-    static THAI: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
-    static CJK: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
+    static ARABIC: Face = OnceLock::new();
+    static HEBREW: Face = OnceLock::new();
+    static THAI: Face = OnceLock::new();
+    static CJK: Face = OnceLock::new();
+    static HANT: Face = OnceLock::new();
+    static KORE: Face = OnceLock::new();
+    // serif × bold, as `Jpan` carries them.
+    static JAPAN: [Face; 4] = [const { OnceLock::new() }; 4];
     let cache = match script {
-        ShapedScript::Arabic => &FACE,
+        ShapedScript::Arabic => &ARABIC,
         ShapedScript::Hebrew => &HEBREW,
         ShapedScript::Thai => &THAI,
         ShapedScript::Cjk => &CJK,
+        ShapedScript::Hant => &HANT,
+        ShapedScript::Kore => &KORE,
+        ShapedScript::Jpan { serif, bold } => &JAPAN[usize::from(serif) * 2 + usize::from(bold)],
     };
     cache
         .get_or_init(|| {
@@ -103,12 +126,58 @@ pub fn cjk_has(c: char) -> bool {
     face(ShapedScript::Cjk).is_some_and(|(font, _)| font.charmap().map(c).is_some())
 }
 
+/// Whether the Traditional Chinese document face has a glyph for `c`. Without a `Hant` face the
+/// Simplified face draws the text, so its coverage answers instead.
+pub fn hant_has(c: char) -> bool {
+    match face(ShapedScript::Hant) {
+        Some((font, _)) => font.charmap().map(c).is_some(),
+        None => cjk_has(c),
+    }
+}
+
+/// Whether the Japanese document face of the style has a glyph for `c` (false without a face).
+pub fn japanese_has(serif: bool, bold: bool, c: char) -> bool {
+    face(ShapedScript::Jpan { serif, bold }).is_some_and(|(font, _)| font.charmap().map(c).is_some())
+}
+
+/// Whether the Korean document face has a glyph for `c` (false without the face).
+pub fn korean_has(c: char) -> bool {
+    face(ShapedScript::Kore).is_some_and(|(font, _)| font.charmap().map(c).is_some())
+}
+
 /// Map Simplified Chinese text to one cluster per character with the `Hans` craft-fonts face.
 /// Chinese needs no joining or mark positioning, so this avoids Harfrust and keeps the original
 /// character in each cluster for `/ToUnicode` and copy/search. [`GlyphError::NoFont`] without the
 /// face; [`GlyphError::Missing`] for a character it lacks.
 pub fn shape_cjk(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
-    let (font, _) = face(ShapedScript::Cjk).ok_or(GlyphError::NoFont)?;
+    shape_one_per_char(text, ShapedScript::Cjk)
+}
+
+/// Map Traditional Chinese text with the `Hant` face, or the `Hans` face when the build has no
+/// Traditional Chinese face (same Han coverage, Simplified glyph forms).
+pub fn shape_hant(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
+    let script = if crate::document_traditional_chinese_font().is_some() { ShapedScript::Hant } else { ShapedScript::Cjk };
+    shape_one_per_char(text, script)
+}
+
+/// Map Japanese text (kana and the kanji beside them) to one cluster per character with the
+/// `Jpan` face of the text's style. Japanese needs no reordering: kana and kanji map directly,
+/// and the original character stays in its cluster for `/ToUnicode` and copy/search.
+pub fn shape_japanese(text: &str, serif: bool, bold: bool) -> Result<Vec<ShapedCluster>, GlyphError> {
+    shape_one_per_char(text, ShapedScript::Jpan { serif, bold })
+}
+
+/// Map Korean text to one cluster per character with the `Kore` face. Hangul syllables are
+/// precomposed in Unicode, so no shaping or reordering is needed.
+pub fn shape_korean(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
+    shape_one_per_char(text, ShapedScript::Kore)
+}
+
+/// One cluster per character for the scripts that need no joining or mark positioning (Chinese,
+/// Japanese kana and kanji, Korean Hangul). Keeps the original character in the cluster, so
+/// `/ToUnicode` and copy/search return it exactly.
+fn shape_one_per_char(text: &str, script: ShapedScript) -> Result<Vec<ShapedCluster>, GlyphError> {
+    let (font, _) = face(script).ok_or(GlyphError::NoFont)?;
     let loc = LocationRef::default();
     let metrics = font.metrics(Size::unscaled(), loc);
     let scale = 1.0 / metrics.units_per_em.max(1) as f64;
@@ -125,7 +194,7 @@ pub fn shape_cjk(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
         if !advance.is_finite() || !(0.0..=2.0).contains(&advance) {
             return Err(GlyphError::Missing);
         }
-        out.push(ShapedCluster { script: ShapedScript::Cjk, glyphs: vec![(gid.to_u32(), [0.0, 0.0])], advance, text: c.to_string() });
+        out.push(ShapedCluster { script, glyphs: vec![(gid.to_u32(), [0.0, 0.0])], advance, text: c.to_string() });
     }
     Ok(out)
 }
@@ -141,13 +210,16 @@ fn shape_script(text: &str, rtl: bool, kind: ShapedScript) -> Result<Vec<ShapedC
         ShapedScript::Arabic => script::ARABIC,
         ShapedScript::Hebrew => script::HEBREW,
         ShapedScript::Thai => script::THAI,
-        // Chinese is mapped directly in `shape_cjk`; this path is never asked to shape it.
-        ShapedScript::Cjk => return Err(GlyphError::Missing),
+        // Chinese, Japanese, Korean and Traditional Chinese map one character to one glyph in
+        // `shape_one_per_char`; this path is never asked to shape them.
+        ShapedScript::Cjk | ShapedScript::Hant | ShapedScript::Jpan { .. } | ShapedScript::Kore => return Err(GlyphError::Missing),
     });
     // Preserve the historical Arabic per-character mapping; Hebrew and Thai marks stay with their base.
     buffer.set_cluster_level(match kind {
         ShapedScript::Arabic => BufferClusterLevel::Characters,
-        ShapedScript::Hebrew | ShapedScript::Thai | ShapedScript::Cjk => BufferClusterLevel::MonotoneGraphemes,
+        ShapedScript::Hebrew | ShapedScript::Thai | ShapedScript::Cjk | ShapedScript::Hant | ShapedScript::Jpan { .. } | ShapedScript::Kore => {
+            BufferClusterLevel::MonotoneGraphemes
+        }
     });
     let shaped = shaper.shape(buffer, ShapeOptions::new());
     // Clusters are byte offsets into `text`; a cluster shows the characters up to the next one.
@@ -370,5 +442,77 @@ mod cjk_tests {
         assert!(cjk_has('中') && cjk_has('你') && !cjk_has('\u{1F600}'));
         assert_eq!(shape_cjk("\u{1F600}"), Err(GlyphError::Missing));
         assert_eq!(shaped_glyph(ShapedScript::Cjk, u32::MAX).map(|_| ()), Err(GlyphError::Missing));
+    }
+}
+
+#[cfg(test)]
+mod japanese_korean_tests {
+    use super::*;
+
+    fn outlines_ok(clusters: &[ShapedCluster]) {
+        for c in clusters {
+            assert_eq!(c.glyphs.len(), 1, "{c:?}");
+            assert!(c.advance.is_finite() && (0.0..=2.0).contains(&c.advance), "{c:?}");
+            for (id, pos) in &c.glyphs {
+                assert_eq!(pos, &[0.0, 0.0]);
+                shaped_glyph(c.script, *id).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn japanese_maps_kana_and_kanji_one_character_at_a_time() {
+        if crate::document_japanese_font().is_none() {
+            eprintln!("skipping the Japanese shaping checks: built without a craft-fonts Jpan face (set CRAFT_FONTS_DIR)");
+            assert_eq!(shape_japanese("あ", false, false), Err(GlyphError::NoFont));
+            assert!(!japanese_has(false, false, 'あ'));
+            return;
+        }
+        for text in ["日本語", "ひらがなとカタカナ", "漢字 123", ""] {
+            let clusters = shape_japanese(text, false, false).unwrap();
+            assert_eq!(clusters.iter().map(|c| c.text.as_str()).collect::<String>(), text);
+            assert!(clusters.iter().all(|c| matches!(c.script, ShapedScript::Jpan { .. })));
+            outlines_ok(&clusters);
+        }
+        // The serif document style is a different face, with its own shaped script.
+        let serif = shape_japanese("日本語", true, false).unwrap();
+        assert!(serif.iter().all(|c| matches!(c.script, ShapedScript::Jpan { serif: true, .. })));
+        outlines_ok(&serif);
+        assert!(japanese_has(false, false, 'あ') && japanese_has(false, false, '日'));
+        assert_eq!(shape_japanese("😀", false, false), Err(GlyphError::Missing));
+        assert_eq!(shaped_glyph(ShapedScript::Jpan { serif: false, bold: false }, u32::MAX).map(|_| ()), Err(GlyphError::Missing));
+    }
+
+    #[test]
+    fn korean_maps_hangul_syllables_one_at_a_time() {
+        if crate::document_korean_font().is_none() {
+            eprintln!("skipping the Korean shaping checks: built without a craft-fonts Kore face (set CRAFT_FONTS_DIR)");
+            assert_eq!(shape_korean("한"), Err(GlyphError::NoFont));
+            assert!(!korean_has('한'));
+            return;
+        }
+        for text in ["한국어", "안녕하세요", "한글 123", ""] {
+            let clusters = shape_korean(text).unwrap();
+            assert_eq!(clusters.iter().map(|c| c.text.as_str()).collect::<String>(), text);
+            assert!(clusters.iter().all(|c| c.script == ShapedScript::Kore));
+            outlines_ok(&clusters);
+        }
+        assert!(korean_has('한') && korean_has('글') && !korean_has('日'));
+        assert_eq!(shape_korean("😀"), Err(GlyphError::Missing));
+    }
+
+    #[test]
+    fn traditional_chinese_uses_the_hant_face_or_falls_back_to_hans() {
+        if crate::document_chinese_font().is_none() {
+            eprintln!("skipping the Traditional Chinese shaping checks: built without a craft-fonts Hans face (set CRAFT_FONTS_DIR)");
+            return;
+        }
+        let text = "繁體中文";
+        let clusters = shape_hant(text).unwrap();
+        assert_eq!(clusters.iter().map(|c| c.text.as_str()).collect::<String>(), text);
+        let expected = if crate::document_traditional_chinese_font().is_some() { ShapedScript::Hant } else { ShapedScript::Cjk };
+        assert!(clusters.iter().all(|c| c.script == expected), "{:?}", clusters.first().map(|c| c.script));
+        outlines_ok(&clusters);
+        assert!(hant_has('繁') && hant_has('體'));
     }
 }

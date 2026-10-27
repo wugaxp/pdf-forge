@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 use pdfcraft_fonts::{
-    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, cjk_has, literal, shape_arabic, shape_cjk, shape_hebrew, shape_thai, shaped_glyph,
-    win_ansi,
+    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, cjk_has, literal, shape_arabic, shape_cjk, shape_hant, shape_hebrew,
+    shape_japanese, shape_korean, shape_thai, shaped_glyph, win_ansi,
 };
 use unicode_bidi::{Level, ParagraphBidiInfo};
 
@@ -300,7 +300,11 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
         let rtl_script = para.chars().any(|c| is_arabic(c) || is_hebrew(c));
         let thai = para.chars().any(is_thai);
         let cjk = para.chars().any(is_cjk);
-        if (thai || cjk)
+        // Japanese kana wrap between characters like Chinese. Korean is written with spaces
+        // between words, so it wraps at them like Latin text.
+        let kana = para.chars().any(is_kana);
+        let hangul = para.chars().any(is_hangul);
+        if (thai || cjk || kana)
             && !rtl_script
             && let Ok(lines) = cluster_lines(t, para, width)
         {
@@ -308,17 +312,18 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
             continue;
         }
         let rtl = rtl_script && unicode_bidi::get_base_direction(para) == unicode_bidi::Direction::Rtl;
-        // Arabic words are shaped one by one (joining stops at spaces), so a line's width is the
-        // sum of its words' and shaping stays linear in the paragraph's length. The space is the
-        // paragraph's; a space between Latin words is drawn in the item's font, a few hundredths
-        // of an em apart.
-        let measure = |s: &str| if rtl_script || thai { shaped_width(t, s, rtl) } else { latin_width(t, s) };
+        // Arabic, Thai, Japanese and Korean words are shaped one by one (joining stops at spaces),
+        // so a line's width is the sum of its words' and shaping stays linear in the paragraph's
+        // length. The space is the paragraph's; a space between Latin words is drawn in the item's
+        // font, a few hundredths of an em apart.
+        let shaped_measure = rtl_script || thai || kana || hangul;
+        let measure = |s: &str| if shaped_measure { shaped_width(t, s, rtl) } else { latin_width(t, s) };
         let space = measure(" ");
         let (mut line, mut line_w) = (String::new(), 0.0);
         for word in para.split(' ') {
             let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
             let candidate_w =
-                if rtl_script || thai { if line.is_empty() { measure(word) } else { line_w + space + measure(word) } } else { measure(&candidate) };
+                if shaped_measure { if line.is_empty() { measure(word) } else { line_w + space + measure(word) } } else { measure(&candidate) };
             if !line.is_empty() && candidate_w > width {
                 out.push((std::mem::take(&mut line), rtl));
                 line = word.to_string();
@@ -368,9 +373,10 @@ fn is_thai(c: char) -> bool {
     matches!(u32::from(c), 0x0E00..=0x0E7F)
 }
 
-/// Chinese characters and punctuation that the `Hans` craft-fonts face draws: Han ideographs,
-/// CJK radicals and punctuation, compatibility ideographs and full-width forms. Kana and Hangul
-/// are deliberately outside it (they belong to the Japanese and Korean paths, not to this one).
+/// Chinese characters and punctuation that the `Hans`/`Hant` craft-fonts faces draw: Han
+/// ideographs, CJK radicals and punctuation, compatibility ideographs and full-width forms.
+/// Kana and Hangul are outside it: `is_kana` and `is_hangul` route them to the Japanese and
+/// Korean paths.
 fn is_cjk(c: char) -> bool {
     let u = u32::from(c);
     // Half-width katakana and kana look like CJK punctuation by range but are not Chinese.
@@ -393,6 +399,51 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
+/// Japanese kana: hiragana, katakana (full and half width), the small-katakana block and the
+/// voiced sound marks. A text with any of them is Japanese, so its kanji take the Japanese face.
+fn is_kana(c: char) -> bool {
+    matches!(u32::from(c), 0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F)
+}
+
+/// Korean Hangul: syllables, the modern, compatibility and extended Jamo blocks, and the
+/// half-width forms.
+fn is_hangul(c: char) -> bool {
+    matches!(u32::from(c), 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7A3 | 0xD7B0..=0xD7FF | 0xFFA0..=0xFFDC)
+}
+
+/// The CJK face a text's ideographs and kana take: kana make it Japanese (kanji beside them
+/// included), Hangul makes it Korean, and text with neither takes the Chinese face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CjkFlavor {
+    Chinese,
+    Japanese,
+    Korean,
+}
+
+fn cjk_flavor(text: &str) -> CjkFlavor {
+    if text.chars().any(is_kana) {
+        CjkFlavor::Japanese
+    } else if text.chars().any(is_hangul) {
+        CjkFlavor::Korean
+    } else {
+        CjkFlavor::Chinese
+    }
+}
+
+/// The shaped script `c` takes in a text of `flavor`, or `None` when it is not CJK text (it is
+/// then drawn in the item's standard or shaped non-CJK font).
+fn cjk_script(c: char, flavor: CjkFlavor, serif: bool, bold: bool) -> Option<ShapedScript> {
+    match flavor {
+        CjkFlavor::Japanese if is_kana(c) || is_cjk(c) => Some(ShapedScript::Jpan { serif, bold }),
+        CjkFlavor::Korean if is_hangul(c) => Some(ShapedScript::Kore),
+        // Han characters in Korean text (hanja) keep the Chinese face: the Korean face need not
+        // carry them.
+        CjkFlavor::Korean if is_cjk(c) => Some(ShapedScript::Cjk),
+        CjkFlavor::Chinese if is_cjk(c) => Some(ShapedScript::Cjk),
+        _ => None,
+    }
+}
+
 /// Arabic letters, marks, digits and punctuation: an item with any of them is shaped with the
 /// craft-fonts Arabic face.
 fn is_arabic(c: char) -> bool {
@@ -406,7 +457,7 @@ fn is_hebrew(c: char) -> bool {
 }
 
 /// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
-/// with the craft-fonts Chinese, Arabic (#125) or Hebrew (#128) face, or a character one of those
+/// with the craft-fonts CJK, Arabic (#125) or Hebrew (#128) face, or a character one of those
 /// faces can't draw (or that has no face to draw it). Page-content tools refuse such text; the
 /// Add-text editor keeps it open.
 pub fn first_undrawable(t: &AddedText) -> Option<char> {
@@ -417,8 +468,16 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
         let rest = AddedText { text: t.text.chars().filter(|c| !is_thai(*c)).collect(), ..t.clone() };
         return first_undrawable(&rest);
     }
-    // Chinese that the Chinese face lacks (or every Chinese character when there is no face).
-    if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
+    // CJK that the text's face lacks (or every CJK character when there is no face).
+    let flavor = cjk_flavor(&t.text);
+    let serif = t.family == Family::Times;
+    if let Some(c) = t.text.chars().find(|c| match cjk_script(*c, flavor, serif, t.bold) {
+        Some(ShapedScript::Cjk) => !cjk_has(*c),
+        Some(ShapedScript::Hant) => !pdfcraft_fonts::hant_has(*c),
+        Some(ShapedScript::Jpan { serif, bold }) => !pdfcraft_fonts::japanese_has(serif, bold, *c),
+        Some(ShapedScript::Kore) => !pdfcraft_fonts::korean_has(*c),
+        _ => false,
+    }) {
         return Some(c);
     }
     // Arabic or Hebrew that nothing can draw: there's no face, or the face lacks it.
@@ -442,12 +501,21 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
     })
 }
 
-/// Whether `t` has Chinese, Arabic or Hebrew that its craft-fonts face draws (so `draw` lays it
+/// Whether `t` has CJK, Arabic or Hebrew that its craft-fonts face draws (so `draw` lays it
 /// out with [`draw_shaped`]).
 fn shaped_by_a_face(t: &AddedText) -> bool {
+    let flavor = cjk_flavor(&t.text);
+    let serif = t.family == Family::Times;
+    let cjk = match flavor {
+        CjkFlavor::Chinese => pdfcraft_fonts::document_chinese_font().is_some() && t.text.chars().any(is_cjk),
+        CjkFlavor::Japanese => {
+            pdfcraft_fonts::document_japanese_font_for_style(serif, t.bold).is_some() && t.text.chars().any(|c| is_kana(c) || is_cjk(c))
+        }
+        CjkFlavor::Korean => pdfcraft_fonts::document_korean_font().is_some() && t.text.chars().any(is_hangul),
+    };
     (pdfcraft_fonts::document_arabic_font().is_some() && t.text.chars().any(is_arabic))
         || (pdfcraft_fonts::document_hebrew_font(false).is_some() && t.text.chars().any(is_hebrew))
-        || (pdfcraft_fonts::document_chinese_font().is_some() && t.text.chars().any(is_cjk))
+        || cjk
 }
 
 /// An Arabic character the face shapes and draws (U+061C, a direction mark, is dropped).
@@ -493,6 +561,9 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
     let base = if rtl { Level::rtl() } else { Level::ltr() };
     let info = ParagraphBidiInfo::new(line, Some(base));
     let (levels, runs) = info.visual_runs(0..line.len());
+    // The CJK face a line's characters take; the item's family picks the Japanese style.
+    let flavor = cjk_flavor(line);
+    let serif = t.family == Family::Times;
     let mut pieces = Vec::new();
     for run in runs {
         let run_rtl = levels.get(run.start).is_some_and(Level::is_rtl);
@@ -506,8 +577,8 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
             let after_hebrew = segments.last().is_some_and(|(kind, _)| *kind == Some(ShapedScript::Hebrew));
             let script = if is_thai(c) {
                 Some(ShapedScript::Thai)
-            } else if is_cjk(c) {
-                Some(ShapedScript::Cjk)
+            } else if let Some(script) = cjk_script(c, flavor, serif, t.bold) {
+                Some(script)
             } else if is_hebrew(c) || (run_rtl && after_hebrew && !c.is_alphanumeric() && pdfcraft_fonts::hebrew_has(c)) {
                 Some(ShapedScript::Hebrew)
             } else if is_arabic(c) || (run_rtl && !c.is_alphanumeric() && pdfcraft_fonts::arabic_has(c)) {
@@ -530,6 +601,9 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
                     ShapedScript::Hebrew => shape_hebrew(&s, run_rtl).map_err(|e| hebrew_error(e, &s))?,
                     ShapedScript::Thai => shape_thai(&s).map_err(|e| thai_error(e, &s))?,
                     ShapedScript::Cjk => shape_cjk(&s).map_err(|e| cjk_error(e, &s))?,
+                    ShapedScript::Hant => shape_hant(&s).map_err(|e| cjk_error(e, &s))?,
+                    ShapedScript::Jpan { serif, bold } => shape_japanese(&s, serif, bold).map_err(|e| japanese_error(e, &s))?,
+                    ShapedScript::Kore => shape_korean(&s).map_err(|e| korean_error(e, &s))?,
                 };
                 Piece::Shaped(shaped)
             } else if run_rtl {
@@ -593,6 +667,26 @@ fn cjk_error(e: GlyphError, text: &str) -> EditError {
         }
         GlyphError::Missing => format!("the Chinese font can't show \"{text}\""),
         GlyphError::TooComplex => "the Chinese glyphs are too complex; use a shorter text box".into(),
+    })
+}
+
+fn japanese_error(e: GlyphError, text: &str) -> EditError {
+    EditError::Invalid(match e {
+        GlyphError::NoFont => {
+            "Japanese text needs a Japanese font in this build; rebuild with CRAFT_FONTS_DIR pointing to craft-fonts with a Jpan face".into()
+        }
+        GlyphError::Missing => format!("the Japanese font can't show \"{text}\""),
+        GlyphError::TooComplex => "the Japanese glyphs are too complex; use a shorter text box".into(),
+    })
+}
+
+fn korean_error(e: GlyphError, text: &str) -> EditError {
+    EditError::Invalid(match e {
+        GlyphError::NoFont => {
+            "Korean text needs a Korean font in this build; rebuild with CRAFT_FONTS_DIR pointing to craft-fonts with a Kore face".into()
+        }
+        GlyphError::Missing => format!("the Korean font can't show \"{text}\""),
+        GlyphError::TooComplex => "the Korean glyphs are too complex; use a shorter text box".into(),
     })
 }
 
@@ -723,7 +817,9 @@ fn draw_laid_shaped(
                     ShapedScript::Arabic => arabic_error(e, &c.text),
                     ShapedScript::Hebrew => hebrew_error(e, &c.text),
                     ShapedScript::Thai => thai_error(e, &c.text),
-                    ShapedScript::Cjk => cjk_error(e, &c.text),
+                    ShapedScript::Cjk | ShapedScript::Hant => cjk_error(e, &c.text),
+                    ShapedScript::Jpan { .. } => japanese_error(e, &c.text),
+                    ShapedScript::Kore => korean_error(e, &c.text),
                 })?);
             }
         }
@@ -867,7 +963,9 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
                 ShapedScript::Arabic => "Arabic",
                 ShapedScript::Hebrew => "Hebrew",
                 ShapedScript::Thai => "Thai",
-                ShapedScript::Cjk => "Chinese",
+                ShapedScript::Cjk | ShapedScript::Hant => "Chinese",
+                ShapedScript::Jpan { .. } => "Japanese",
+                ShapedScript::Kore => "Korean",
             },
             |f| f.family,
         ),
@@ -930,8 +1028,11 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
             let mut fonts = Dict::new();
             fonts.set(name.clone().into_bytes(), Object::Dict(font));
             let face_or_new = |has: fn(char) -> bool, face: bool| t.text.chars().any(has) && (face || !existing);
+            let japanese = pdfcraft_fonts::document_japanese_font_for_style(t.family == Family::Times, t.bold).is_some();
             if t.text.chars().any(is_thai)
                 || face_or_new(is_cjk, pdfcraft_fonts::document_chinese_font().is_some())
+                || face_or_new(is_kana, japanese)
+                || face_or_new(is_hangul, pdfcraft_fonts::document_korean_font().is_some())
                 || face_or_new(is_arabic, pdfcraft_fonts::document_arabic_font().is_some())
                 || face_or_new(is_hebrew, pdfcraft_fonts::document_hebrew_font(false).is_some())
             {
@@ -1179,13 +1280,34 @@ fn validate(c: &Content) -> Result<(), EditError> {
             if t.text.chars().any(is_thai) && pdfcraft_fonts::document_thai_font().is_none() {
                 return Err(thai_error(GlyphError::NoFont, &t.text));
             }
-            if t.text.chars().any(is_cjk) {
-                if pdfcraft_fonts::document_chinese_font().is_none() {
-                    return Err(cjk_error(GlyphError::NoFont, &t.text));
+            let flavor = cjk_flavor(&t.text);
+            let serif = t.family == Family::Times;
+            match flavor {
+                CjkFlavor::Chinese if t.text.chars().any(is_cjk) => {
+                    if pdfcraft_fonts::document_chinese_font().is_none() {
+                        return Err(cjk_error(GlyphError::NoFont, &t.text));
+                    }
+                    if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
+                        return Err(cjk_error(GlyphError::Missing, &c.to_string()));
+                    }
                 }
-                if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
-                    return Err(cjk_error(GlyphError::Missing, &c.to_string()));
+                CjkFlavor::Japanese => {
+                    if pdfcraft_fonts::document_japanese_font_for_style(serif, t.bold).is_none() {
+                        return Err(japanese_error(GlyphError::NoFont, &t.text));
+                    }
+                    if let Some(c) = t.text.chars().find(|c| (is_kana(*c) || is_cjk(*c)) && !pdfcraft_fonts::japanese_has(serif, t.bold, *c)) {
+                        return Err(japanese_error(GlyphError::Missing, &c.to_string()));
+                    }
                 }
+                CjkFlavor::Korean => {
+                    if pdfcraft_fonts::document_korean_font().is_none() {
+                        return Err(korean_error(GlyphError::NoFont, &t.text));
+                    }
+                    if let Some(c) = t.text.chars().find(|c| is_hangul(*c) && !pdfcraft_fonts::korean_has(*c)) {
+                        return Err(korean_error(GlyphError::Missing, &c.to_string()));
+                    }
+                }
+                _ => {}
             }
             // Without the Arabic face, `draw` decides for the Arabic letters themselves (#403): a new
             // item is refused with what's missing, and one that already holds Arabic stays movable.

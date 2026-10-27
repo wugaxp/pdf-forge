@@ -248,7 +248,9 @@ mod tests {
         assert_eq!(path_dep_pins(manifest).len(), 2, "registry dependencies have no pin");
         let error = check(manifest).unwrap_err();
         assert!(error.contains("own is pinned to 0.2.0"), "{error}");
-        assert!(!error.contains("dep"), "{error}");
+        // The agreeing pin is not reported ("dependency" in the generic sentence contains "dep",
+        // so match the reported form, not the substring).
+        assert!(!error.contains("dep is pinned"), "{error}");
     }
 
     /// The `rust-version = "1.NN"` line of a manifest, as the minor number.

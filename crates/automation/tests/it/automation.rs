@@ -3759,21 +3759,21 @@ fn creating_and_reducing_through_tools() {
 #[test]
 fn creating_from_text_refuses_what_the_font_cannot_draw() {
     let dir = workdir("create-undrawable");
-    std::fs::write(dir.join("kr.txt"), "ABC 제안서 시험").unwrap();
+    std::fs::write(dir.join("emoji.txt"), "ABC 😀").unwrap();
     let mut a = auto(&dir);
     let refused = |r: Result<Vec<Content>, ToolError>| match r {
-        Err(ToolError::InvalidArgs(m) | ToolError::Failed(m)) => assert!(m.contains("U+C81C"), "{m}"),
+        Err(ToolError::InvalidArgs(m) | ToolError::Failed(m)) => assert!(m.contains("U+1F600"), "{m}"),
         other => panic!("expected a refusal, got {other:?}"),
     };
-    assert!(matches!(a.call("doc_create", &json!({ "from": "text", "text": "ABC 제안서 시험" })), Err(ToolError::InvalidArgs(_))));
-    refused(a.call("doc_create", &json!({ "from": "text", "text": "ABC 제안서 시험" })));
-    refused(a.call("doc_create", &json!({ "from": "text", "path": "kr.txt" })));
+    assert!(matches!(a.call("doc_create", &json!({ "from": "text", "text": "ABC 😀" })), Err(ToolError::InvalidArgs(_))));
+    refused(a.call("doc_create", &json!({ "from": "text", "text": "ABC 😀" })));
+    refused(a.call("doc_create", &json!({ "from": "text", "path": "emoji.txt" })));
     // WinAnsi characters, line breaks and tabs are still fine.
     let d = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Price: 5 € at café\r\n\tnext\u{c}page two" }))["doc"].as_u64().unwrap();
     assert_eq!(page_text(&mut a, d).len(), 2);
     // #959: page_add_text refuses it too.
     let doc = ok(&mut a, "doc_create", json!({ "from": "blank" }))["doc"].as_u64().unwrap();
-    refused(a.call("page_add_text", &json!({ "doc": doc, "page": 1, "text": "ABC 제안서 시험", "at": [20, 20] })));
+    refused(a.call("page_add_text", &json!({ "doc": doc, "page": 1, "text": "ABC 😀", "at": [20, 20] })));
 }
 
 #[test]

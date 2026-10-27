@@ -1972,12 +1972,16 @@ fn japanese_replacement_missing_a_glyph_after_240_changes_nothing() {
     if without_craft_fonts("japanese_replacement_missing_a_glyph_after_240_changes_nothing") {
         return;
     }
-    // The first CJK character that no face draws: the 242nd unique character, in a second font.
-    let faces = pdfcraft_fonts::document_japanese_fonts_for_style(false, false);
-    let missing = (0x4E00u32..0x9FFF)
-        .filter_map(char::from_u32)
-        .find(|ch| faces.iter().all(|face| pdfcraft_fonts::japanese_glyph_from(face, *ch).is_err()))
-        .expect("some CJK character is outside every face");
+    // The 242nd unique character, in a second font, that no face draws: an emoji. (The Japanese,
+    // Chinese, Traditional Chinese and Korean faces cover the CJK blocks among them.)
+    let missing = '\u{1F600}';
+    let faces: Vec<&pdfcraft_fonts::CraftFont> = pdfcraft_fonts::document_japanese_fonts_for_style(false, false)
+        .into_iter()
+        .chain(pdfcraft_fonts::document_chinese_font())
+        .chain(pdfcraft_fonts::document_traditional_chinese_font())
+        .chain(pdfcraft_fonts::document_korean_font())
+        .collect();
+    assert!(faces.iter().all(|face| pdfcraft_fonts::japanese_glyph_from(face, missing).is_err()), "the test character is drawn by a face");
     let replacement = format!("{}{missing}", covered_japanese_chars(241));
     let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
     let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
@@ -3716,16 +3720,113 @@ fn chinese_added_text_uses_the_hans_type3_fallback() {
     assert!(all.contains(&text.text), "{all}");
 }
 
+/// Japanese Add Text is written with a generated Type 3 font from the `Jpan` face: kana and the
+/// kanji beside them take that face, `/ToUnicode` keeps copy and search working, and wrapping
+/// breaks between characters.
+#[test]
+fn japanese_added_text_uses_the_jpan_type3_fallback() {
+    if pdfcraft_fonts::document_japanese_font().is_none() {
+        eprintln!("skipping the Japanese Add Text check: built without a craft-fonts Jpan face (set CRAFT_FONTS_DIR)");
+        return;
+    }
+    let text =
+        AddedText {
+            rect: [72.0, 600.0, 180.0, 700.0], text: "日本語のテキスト、ひらがなとカタカナ。".into(), size: 14.0, ..AddedText::default()
+        };
+    assert_eq!(first_undrawable(&text), None);
+    assert!(crate::added::lines(&text).len() > 1, "Japanese wraps between characters");
+    let mut doc = fixture();
+    add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
+    let doc = reopen(&doc);
+    let added = list_added(&doc);
+    let Content::Text(t) = &added[0].content else { panic!("expected text") };
+    assert_eq!(t.text, text.text, "the logical text is kept for editing");
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains("PCAr"), "{content}");
+    let page = pdfcraft_model::pages(&doc).swap_remove(0);
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap());
+    let fonts = doc.resolve(res.as_dict().unwrap().get(b"Font").unwrap());
+    let (_, font) = fonts.as_dict().unwrap().iter().find(|(name, _)| name.starts_with(b"PCAr")).expect("a generated Japanese font");
+    let font = doc.resolve(font);
+    assert_eq!(font.as_dict().unwrap().name(b"Subtype"), Some(&b"Type3"[..]));
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let all: String = lines.iter().map(|l| l.text.as_str()).collect();
+    assert!(all.contains(&text.text), "{all}");
+}
+
+/// Korean Add Text is written with a generated Type 3 font from the `Kore` face, and words wrap
+/// at spaces rather than between syllables. `/ToUnicode` keeps copy and search working.
+#[test]
+fn korean_added_text_uses_the_kore_type3_fallback() {
+    if pdfcraft_fonts::document_korean_font().is_none() {
+        eprintln!("skipping the Korean Add Text check: built without a craft-fonts Kore face (set CRAFT_FONTS_DIR)");
+        return;
+    }
+    let text = AddedText {
+        rect: [72.0, 600.0, 180.0, 700.0],
+        text: "안녕하세요. 한국어 텍스트를 시험합니다. 한글은 낱말 사이에서 줄을 바꿉니다.".into(),
+        size: 14.0,
+        ..AddedText::default()
+    };
+    assert_eq!(first_undrawable(&text), None);
+    let lines = crate::added::lines(&text);
+    assert!(lines.len() > 1, "Korean wraps at its spaces");
+    // A line never starts inside a word: every run it breaks at is one of the source's words.
+    let words: std::collections::HashSet<&str> = text.text.split(' ').collect();
+    for line in lines.iter().skip(1) {
+        for word in line.split(' ') {
+            assert!(words.contains(word), "{word:?} is not a whole word of the source text");
+        }
+    }
+    let mut doc = fixture();
+    add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
+    let doc = reopen(&doc);
+    let Content::Text(t) = &list_added(&doc)[0].content else { panic!("expected text") };
+    assert_eq!(t.text, text.text, "the logical text is kept for editing");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let all: String = lines.iter().map(|l| l.text.as_str()).collect();
+    // Line breaks in the source fall at spaces, and the extractor keeps no trailing spaces, so
+    // compare the words: every one survives, in order (the page's own text may precede them).
+    let mut rest = all.as_str();
+    for word in text.text.split_whitespace() {
+        let at = rest.find(word).unwrap_or_else(|| panic!("{word:?} is missing from {all:?}"));
+        rest = &rest[at + word.len()..];
+    }
+}
+
+/// Traditional Chinese Add Text draws through the existing CJK path: the `Hant` face when the
+/// build input has one, the `Hans` face otherwise (same Han coverage, Simplified glyph forms).
+#[test]
+fn traditional_chinese_added_text_draws() {
+    if pdfcraft_fonts::document_chinese_font().is_none() {
+        eprintln!("skipping the Traditional Chinese Add Text check: built without a craft-fonts Hans face (set CRAFT_FONTS_DIR)");
+        return;
+    }
+    let text = AddedText {
+        rect: [72.0, 600.0, 180.0, 700.0], text: "繁體中文的測試文字，包含標點符號。".into(), size: 14.0, ..AddedText::default()
+    };
+    assert_eq!(first_undrawable(&text), None);
+    assert!(crate::added::lines(&text).len() > 1, "Traditional Chinese wraps between characters");
+    let mut doc = fixture();
+    add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
+    let doc = reopen(&doc);
+    let Content::Text(t) = &list_added(&doc)[0].content else { panic!("expected text") };
+    assert_eq!(t.text, text.text, "the logical text is kept for editing");
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let all: String = lines.iter().map(|l| l.text.as_str()).collect();
+    assert!(all.contains(&text.text), "{all}");
+}
+
 /// #125: page-content tools refuse text the standard fonts can't draw instead of writing `?`,
 /// and leave the document untouched.
 #[test]
 fn page_text_the_standard_fonts_cant_draw_is_refused() {
     let mut doc = fixture();
     let before: Vec<Vec<String>> = (0..3).map(|p| streams(&reopen(&doc), p)).collect();
-    // Japanese kana are still outside the Chinese face's path, so this stays refused.
-    let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "にほんごのテキスト".into(), ..AddedText::default() };
+    // An emoji is outside every face this build has, so it stays refused.
+    let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "😀".into(), ..AddedText::default() };
     let err = add_content(&mut doc, 0, &Content::Text(text)).unwrap_err().to_string();
-    assert!(err.contains("\"に\" (U+306B)"), "{err}");
+    assert!(err.contains("\"😀\" (U+1F600)"), "{err}");
     let hf = HeaderFooter {
         text: ["Ελληνικά".into(), String::new(), String::new(), String::new(), String::new(), String::new()],
         ..HeaderFooter::default()
@@ -3740,8 +3841,8 @@ fn page_text_the_standard_fonts_cant_draw_is_refused() {
     add_content(&mut doc, 0, &Content::Text(text.clone())).unwrap();
     // Retyping existing text is refused the same way, and the whole document is left as it was.
     let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
-    let retyped = AddedText { text: "Café の".into(), ..text.clone() };
-    assert!(update_content(&mut doc, 0, 0, &Content::Text(retyped)).unwrap_err().to_string().contains("U+306E"));
+    let retyped = AddedText { text: "Café 😀".into(), ..text.clone() };
+    assert!(update_content(&mut doc, 0, 0, &Content::Text(retyped)).unwrap_err().to_string().contains("U+1F600"));
     assert_eq!(write_incremental(&doc, &SaveOptions::default()).unwrap(), saved, "a refused update changes nothing");
     // A carriage return is checked where it would be drawn: added text splits on LF only, so
     // CRLF would leave a `?`; headers and watermarks split CRLF into lines, but not a lone CR.
@@ -3758,13 +3859,13 @@ fn page_text_the_standard_fonts_cant_draw_is_refused() {
     let arabic = |text: &str| AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: text.into(), ..AddedText::default() };
     // U+061C is in the Arabic block but is a direction mark that's dropped, not shaped: it never
     // makes text drawable, nor (with the face) undrawable.
-    assert!(add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}の"))).is_err());
+    assert!(add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}😀"))).is_err());
     if pdfcraft_fonts::arabic_has('م') {
         add_content(&mut doc, 0, &Content::Text(arabic("مرحبا Hello"))).unwrap();
         add_content(&mut doc, 0, &Content::Text(arabic("\u{061C}Hello"))).unwrap();
-        for text in ["مرحبا の", "\u{061C}の"] {
+        for text in ["مرحبا 😀", "\u{061C}😀"] {
             let err = add_content(&mut doc, 0, &Content::Text(arabic(text))).unwrap_err().to_string();
-            assert!(err.contains("U+306E"), "{text:?}: {err}");
+            assert!(err.contains("U+1F600"), "{text:?}: {err}");
         }
     } else {
         // #403's own refusal says what's missing; the Add-text editor still keeps the draft.
@@ -4093,7 +4194,7 @@ fn added_thai_text_wraps_clusters_and_survives_reopen() {
     assert_eq!(super::added::lines(&narrow), ["กิ่", "กิ่", "กิ่"]);
     update_content(&mut doc, 0, 0, &Content::Text(AddedText { text: "แก้ไข น้ำ".into(), ..t.clone() })).unwrap();
     assert!(!own(&doc, 0).is_empty());
-    let bad = Content::Text(AddedText { text: "ไทย の".into(), ..t });
+    let bad = Content::Text(AddedText { text: "ไทย 😀".into(), ..t });
     let before = list_added(&doc);
     assert!(update_content(&mut doc, 0, 0, &bad).is_err());
     assert_eq!(list_added(&doc), before);

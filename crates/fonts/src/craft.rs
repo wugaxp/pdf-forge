@@ -43,12 +43,39 @@ pub fn ui_chinese_fonts() -> Vec<&'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.covers("Hans")).collect()
 }
 
+/// The `Hant` craft-fonts faces for Traditional Chinese interface text, in manifest order.
+/// Empty when the build input has no Traditional Chinese face: the Simplified face still draws
+/// the shared ideographs, with Simplified glyph forms.
+pub fn ui_traditional_chinese_fonts() -> Vec<&'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.covers("Hant")).collect()
+}
+
+/// The `Kore`/`Hang` craft-fonts faces for Korean interface text, in manifest order.
+pub fn ui_korean_fonts() -> Vec<&'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.covers("Kore") || f.covers("Hang")).collect()
+}
+
 /// The face for Simplified Chinese text written into PDFs: the Regular `Hans` face, else any
 /// other. `None` without craft-fonts or when its revision has no Chinese face (the Add Text
 /// editor then keeps the text but cannot draw it, as it does for Arabic or Thai without a face).
 pub fn document_chinese_font() -> Option<&'static CraftFont> {
     let hans = || CRAFT_FONTS.iter().filter(|f| f.covers("Hans"));
     hans().find(|f| f.style == "Regular").or_else(|| hans().next())
+}
+
+/// The face for Traditional Chinese text written into PDFs: the Regular `Hant` face, else any
+/// other. `None` without a Traditional Chinese face; callers then draw the text with the
+/// Simplified face, whose Han coverage is the same but whose glyph forms are Simplified.
+pub fn document_traditional_chinese_font() -> Option<&'static CraftFont> {
+    let hant = || CRAFT_FONTS.iter().filter(|f| f.covers("Hant"));
+    hant().find(|f| f.style == "Regular").or_else(|| hant().next())
+}
+
+/// The face for Korean text written into PDFs: the Regular `Kore`/`Hang` face, else any other.
+/// `None` without craft-fonts or when it has no Korean face.
+pub fn document_korean_font() -> Option<&'static CraftFont> {
+    let korean = || CRAFT_FONTS.iter().filter(|f| f.covers("Kore") || f.covers("Hang"));
+    korean().find(|f| f.style == "Regular").or_else(|| korean().next())
 }
 
 /// The `Arab` craft-fonts faces for Arabic-script interface text (file names, document titles),
@@ -117,7 +144,9 @@ fn hebrew_face(faces: &[CraftFont], bold: bool) -> Option<&CraftFont> {
 }
 
 /// Interface CJK faces in fallback order for the UI language: Simplified Chinese first when
-/// `prefer_hans`, otherwise Japanese first (the historical default).
+/// `prefer_hans`, otherwise Japanese first (the historical default). Traditional Chinese and
+/// Korean faces take their place after the preferred group; their scripts don't overlap other
+/// than through Han characters.
 ///
 /// The order matters beyond glyph shapes. egui renders each character with the FIRST face that
 /// has its glyph, so with Japanese first a Simplified-only character (e.g. U+6B22 欢, absent
@@ -129,7 +158,8 @@ pub fn ui_cjk_fonts(prefer_hans: bool) -> Vec<&'static CraftFont> {
 }
 
 fn order_cjk<'a>(faces: impl IntoIterator<Item = &'a CraftFont>, prefer_hans: bool) -> Vec<&'a CraftFont> {
-    let mut out: Vec<&'a CraftFont> = faces.into_iter().filter(|f| f.covers("Hans") || f.covers("Jpan")).collect();
+    let mut out: Vec<&'a CraftFont> =
+        faces.into_iter().filter(|f| f.covers("Hans") || f.covers("Hant") || f.covers("Jpan") || f.covers("Kore") || f.covers("Hang")).collect();
     let first = if prefer_hans { "Hans" } else { "Jpan" };
     // The preferred script's faces first (a face covering both counts as preferred); within each
     // group the Japanese UI face (BIZ UDPGothic, not a serif) leads, otherwise manifest order
@@ -257,12 +287,41 @@ mod tests {
         assert_eq!(ja, ["BIZ UDPGothic", "BIZ UDPGothic", "FakeHans"]);
         // Latin-only faces are never interface CJK fallbacks.
         assert!(order_cjk(&faces, true).iter().all(|f| f.covers("Hans") || f.covers("Jpan")));
+        // Traditional Chinese and Korean faces join the stack after the preferred group.
+        static HANT: &[&str] = &["Hant"];
+        static KORE: &[&str] = &["Kore", "Hang"];
+        let hant = CraftFont { family: "FakeHant", style: "Regular", scripts: HANT, bytes: BYTES };
+        let kore = CraftFont { family: "FakeKore", style: "Regular", scripts: KORE, bytes: BYTES };
+        let mixed = [&faces[0], &faces[2], &faces[1], &hant, &kore, &faces[3]];
+        let zh: Vec<&str> = order_cjk(mixed, true).iter().map(|f| f.family).collect();
+        assert_eq!(zh, ["FakeHans", "BIZ UDPGothic", "BIZ UDPGothic", "FakeHant", "FakeKore"]);
+        let ja: Vec<&str> = order_cjk(mixed, false).iter().map(|f| f.family).collect();
+        assert_eq!(ja, ["BIZ UDPGothic", "BIZ UDPGothic", "FakeHans", "FakeHant", "FakeKore"]);
+        assert!(!ja.contains(&"Inter"), "Latin-only faces stay out");
         // A serif listed first in the manifest never leads the Japanese group, in either mode.
         let mincho = CraftFont { family: "Shippori Mincho", style: "Regular", scripts: JPAN_LATN, bytes: BYTES };
         let zh: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], true).iter().map(|f| f.family).collect();
         assert_eq!(zh, ["FakeHans", "BIZ UDPGothic", "Shippori Mincho"]);
         let ja: Vec<&str> = order_cjk([&mincho, &faces[2], &faces[1]], false).iter().map(|f| f.family).collect();
         assert_eq!(ja, ["BIZ UDPGothic", "Shippori Mincho", "FakeHans"]);
+    }
+
+    #[test]
+    fn korean_and_traditional_chinese_faces_follow_the_manifest() {
+        use crate::cjk_scripts::is_cjk_script;
+        let korean = CRAFT_FONTS.iter().filter(|f| f.covers("Kore") || f.covers("Hang")).count();
+        let hant = CRAFT_FONTS.iter().filter(|f| f.covers("Hant")).count();
+        assert_eq!(ui_korean_fonts().len(), korean);
+        assert_eq!(ui_traditional_chinese_fonts().len(), hant);
+        assert_eq!(document_korean_font().is_some(), korean > 0);
+        assert_eq!(document_traditional_chinese_font().is_some(), hant > 0);
+        // Korean and Traditional Chinese tags are CJK for the build rule, so their faces are
+        // embedded rather than skipped as non-CJK "other" fonts.
+        assert!(is_cjk_script("Kore") && is_cjk_script("Hang") && is_cjk_script("Hant-HK"));
+        // The face picked for the document is a Regular one when the manifest has one.
+        if let Some(face) = document_korean_font() {
+            assert_eq!(face.style, "Regular");
+        }
     }
 
     #[test]

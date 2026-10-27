@@ -2188,15 +2188,19 @@ fn no_hebrew_font() -> EditError {
 }
 
 /// The faces a Type 3 replacement may draw `text` with, best first. Text with Hebrew takes the
-/// Hebrew face first (its Latin and digits too, so a line keeps one look), then the Japanese faces
-/// and the bundled Latin one for anything it lacks; other text takes the Japanese faces, and the
-/// bundled Latin face behind them, which covers the Latin, Greek and Cyrillic letters they lack
-/// (#2593: the Japanese faces have no қ, ғ, ҳ, ә, ө, ү, ұ or һ).
+/// Hebrew face first (its Latin and digits too, so a line keeps one look); otherwise the Japanese
+/// faces come first, then the Chinese (Simplified, then Traditional) and Korean faces, and the
+/// bundled Latin face last, which covers the Latin, Greek and Cyrillic letters they lack (#2593:
+/// the Japanese faces have no қ, ғ, ҳ, ә, ө, ү, ұ or һ). A face after the chosen one draws the
+/// characters the chosen one lacks.
 fn type3_faces(text: &str, family: crate::added::Family, bold: bool) -> Result<(Vec<&'static CraftFont>, bool), EditError> {
     let japanese = pdfcraft_fonts::document_japanese_fonts_for_style(family == crate::added::Family::Times, bold);
+    let chinese = pdfcraft_fonts::document_chinese_font().into_iter().chain(pdfcraft_fonts::document_traditional_chinese_font());
+    let korean = pdfcraft_fonts::document_korean_font();
     let latin = pdfcraft_fonts::document_latin_fonts(bold);
+    let cjk = || japanese.iter().copied().chain(chinese).chain(korean).chain(latin.iter().copied());
     if !text.chars().any(crate::bidi::is_hebrew) {
-        return Ok((japanese.into_iter().chain(latin).collect(), false));
+        return Ok((cjk().collect(), false));
     }
     // Points are drawn on their letter with the font's positioning, which a one-glyph-per-
     // character Type 3 font can't do; refuse rather than print them beside the letter.
@@ -2204,7 +2208,7 @@ fn type3_faces(text: &str, family: crate::added::Family, bold: bool) -> Result<(
         return Err(EditError::Invalid("Hebrew points (niqqud) can't be written into a PDF yet; type the text without them".into()));
     }
     let hebrew = pdfcraft_fonts::document_hebrew_font(bold).ok_or_else(no_hebrew_font)?;
-    Ok((std::iter::once(hebrew).chain(japanese).chain(latin).collect(), true))
+    Ok((std::iter::once(hebrew).chain(cjk()).collect(), true))
 }
 
 fn type3_font(
@@ -2232,7 +2236,9 @@ fn type3_font(
     // text keeps the Hebrew face and takes each character it lacks from the next face that has it.
     let face = if hebrew { faces.first().copied() } else { fallback_face(&faces, &chars, |face, ch| japanese_glyph_from(face, ch).is_ok()) }
         .ok_or_else(|| no_fallback_font(text))?;
-    let others: &[&CraftFont] = if hebrew { faces.get(1..).unwrap_or_default() } else { &[] };
+    // Every face after the chosen one can draw a character it lacks (a Cyrillic or Korean name
+    // inside a Japanese paragraph, say); a character no face draws is reported once.
+    let others: &[&CraftFont] = faces.iter().position(|f| std::ptr::eq(*f, face)).map_or(&[][..], |i| &faces[i + 1..]);
     // Every outline is read before the document is touched, so a character that fails leaves it
     // as it was. Each font takes the next `per_font` characters; codes restart at 1 in each.
     let per_font = max_glyphs.clamp(1, MAX_TYPE3_GLYPHS);
