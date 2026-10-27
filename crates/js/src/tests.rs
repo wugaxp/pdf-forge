@@ -31,6 +31,25 @@ fn calculate_scripts_read_fields_and_set_the_value() {
     assert!(o.rc);
 }
 
+/// A script worker holds one slot in the cap from before it is spawned until it is done: the
+/// taking is one atomic step, so however many runs race, the cap stands and the next is refused
+/// while every slot is held (several runaway scripts hold them longest).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_script_worker_takes_one_slot_and_gives_it_back() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let taken = AtomicUsize::new(0);
+    let mut held = 0;
+    while take_script_slot(&taken, MAX_SCRIPT_WORKERS) {
+        held += 1;
+    }
+    assert_eq!(held, MAX_SCRIPT_WORKERS, "the cap is taken a slot at a time");
+    assert!(!take_script_slot(&taken, MAX_SCRIPT_WORKERS), "every slot held: the next is refused");
+    // A worker that is done gives its slot back, and one more fits again.
+    taken.fetch_sub(1, Ordering::AcqRel);
+    assert!(take_script_slot(&taken, MAX_SCRIPT_WORKERS));
+}
+
 #[test]
 fn numbers_with_leading_zeros_stay_text() {
     let o = go("event.value = typeof getField('zip').value + ':' + typeof getField('qty').value;", &Event::field("Calculate", "total", ""));

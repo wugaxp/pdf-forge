@@ -14,11 +14,26 @@ use crate::{PdfCraftApp, widgets};
 
 const MARK_RED: Color32 = Color32::from_rgb(0xE3, 0x22, 0x22);
 
+/// At most this many pages a redaction search may read on the UI thread (tests and wasm run
+/// inline whatever the count). Counting pages, not bytes: a tiny file can hold hundreds of them.
+const INLINE_SCAN_PAGES: usize = 8;
+/// How long an inline scan may hold the frame before it hands the search to a worker thread.
+/// A page count is only an estimate; this is what actually keeps the window responsive.
+const INLINE_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// A redaction search scanning a large document off the UI thread.
 pub(crate) struct RedactSearchJob {
     rx: std::sync::mpsc::Receiver<Result<Vec<Edit>, String>>,
     doc: pdfcraft_engine::DocId,
     bytes: std::sync::Arc<Vec<u8>>,
+    /// The document's edit generation when the scan started: marks read from an older document
+    /// would land on text that has moved.
+    generation: u64,
+}
+
+/// Whether a finished scan still describes `doc` as it is now (see [`RedactSearchJob`]).
+fn scan_is_current(job: &RedactSearchJob, doc: &pdfcraft_engine::Document) -> bool {
+    doc.edit_generation() == job.generation && std::sync::Arc::ptr_eq(&doc.bytes, &job.bytes)
 }
 
 /// Everything a redaction search needs, captured so a large document can scan on a thread.
@@ -35,27 +50,32 @@ struct RedactScan {
     author: String,
 }
 
-/// Read every page's text and build the marks for the search draft.
-fn find_redact_edits(scan: RedactScan) -> Vec<Edit> {
+/// Read every page's text and build the marks for the search draft. An inline scan passes its
+/// frame `deadline`: when it runs out, the scan stops with `false` and the partial marks are
+/// dropped, so slow pages cannot hold the UI thread (the caller then scans on a worker thread).
+fn find_redact_edits(scan: &RedactScan, deadline: Option<std::time::Instant>) -> (Vec<Edit>, bool) {
     let RedactScan { bytes, password, pages, needles, mode, pattern, case_sensitive, whole_words, prefs, author } = scan;
     let config = pdfcraft_render::RenderConfig { password: password.as_deref().map(std::sync::Arc::from), ..Default::default() };
-    let mut r = pdfcraft_render::PageRenderer::new(bytes, config);
+    let mut r = pdfcraft_render::PageRenderer::new(bytes.clone(), config);
     let mut edits = Vec::new();
     for (page, page_info) in pages.iter().enumerate() {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return (Vec::new(), false);
+        }
         let out = r.render(pdfcraft_render::RenderRequest { page, kind: pdfcraft_render::RequestKind::Text, scale: 1.0, ..Default::default() });
         let Some(text) = out.text else { continue };
         let hits = match mode {
-            SearchMode::Patterns => text.find_with(|c| pdfcraft_engine::find_pattern(pattern, c)),
-            _ => needles.iter().flat_map(|w| text.find_opts(w, case_sensitive, whole_words)).collect(),
+            SearchMode::Patterns => text.find_with(|c| pdfcraft_engine::find_pattern(*pattern, c)),
+            _ => needles.iter().flat_map(|w| text.find_opts(w, *case_sensitive, *whole_words)).collect(),
         };
         for h in hits {
             let quads: Vec<[f64; 8]> = text.line_rects(h).into_iter().map(|r| page_info.view_rect_to_quad(r)).collect();
             if !quads.is_empty() {
-                edits.push(prefs.mark(page, quads, &author));
+                edits.push(prefs.mark(page, quads, author));
             }
         }
     }
-    edits
+    (edits, true)
 }
 
 /// Redaction Tool Properties: what new marks look like once applied.
@@ -236,6 +256,16 @@ pub enum SearchMode {
     Patterns,
 }
 
+/// What the last Find text and redact did, shown in the dialog. A search whose marks were
+/// dropped says so: "0 matches" would claim the document was searched and had none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchOutcome {
+    /// `n` matches were marked for redaction.
+    Marked(usize),
+    /// The document changed while the search ran, so its marks were dropped.
+    DocumentChanged,
+}
+
 /// Find text and redact.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchDraft {
@@ -246,8 +276,8 @@ pub struct SearchDraft {
     pub case_sensitive: bool,
     pub whole_words: bool,
     pub pattern: RedactPattern,
-    /// The result of the last search (matches marked), shown in the dialog.
-    pub found: Option<usize>,
+    /// The result of the last search, shown in the dialog.
+    pub outcome: Option<SearchOutcome>,
 }
 
 impl Default for SearchDraft {
@@ -259,7 +289,7 @@ impl Default for SearchDraft {
             case_sensitive: false,
             whole_words: false,
             pattern: RedactPattern::Phone,
-            found: None,
+            outcome: None,
         }
     }
 }
@@ -342,11 +372,18 @@ pub(crate) fn paint(painter: &egui::Painter, page: usize, view: &DocView, pointe
 }
 
 impl PdfCraftApp {
-    /// Mark every match of the search draft on every page; returns how many were marked now.
-    /// A large document scans on a worker thread; [`Self::poll_redact_search`] adds its marks.
-    pub fn redact_search(&mut self) -> usize {
-        let Some((_, id)) = self.active_ids() else { return 0 };
-        let Some(doc) = self.session.get(id) else { return 0 };
+    /// Mark every match of the search draft on every page. The result is in
+    /// [`SearchDraft::outcome`]. A large document scans on a worker thread;
+    /// [`Self::poll_redact_search`] adds its marks when they are ready.
+    pub fn redact_search(&mut self) {
+        // One scan at a time: a second one would drop the first's result while its worker kept
+        // reading the whole document.
+        if self.redact_search_job.is_some() {
+            self.notify_tr("A search is already running");
+            return;
+        }
+        let Some((_, id)) = self.active_ids() else { return };
+        let Some(doc) = self.session.get(id) else { return };
         let d = self.redact_search.clone();
         let needles = match d.mode {
             SearchMode::Phrase if !d.text.trim().is_empty() => vec![d.text.clone()],
@@ -354,52 +391,54 @@ impl PdfCraftApp {
             SearchMode::Phrase | SearchMode::Patterns => Vec::new(),
         };
         if d.mode != SearchMode::Patterns && needles.is_empty() {
-            return 0;
+            return;
         }
-        let doc_bytes = doc.bytes.clone();
-        let bytes = doc_bytes.clone();
-        let bytes_len = bytes.len();
-        let password = doc.password.clone();
-        let pages = doc.info.pages.clone();
-        let prefs = self.redact_prefs.clone();
-        let author = self.comment_prefs.author.clone();
+        let generation = doc.edit_generation();
+        let bytes = doc.bytes.clone();
+        let scan = RedactScan {
+            bytes: bytes.clone(),
+            password: doc.password.clone(),
+            pages: doc.info.pages.clone(),
+            needles,
+            mode: d.mode,
+            pattern: d.pattern,
+            case_sensitive: d.case_sensitive,
+            whole_words: d.whole_words,
+            prefs: self.redact_prefs.clone(),
+            author: self.comment_prefs.author.clone(),
+        };
+        self.redact_search.outcome = None;
+        let job = |rx: std::sync::mpsc::Receiver<Result<Vec<Edit>, String>>| RedactSearchJob { rx, doc: id, bytes: bytes.clone(), generation };
+        // The scan reads every page's text. Tests and wasm (no threads) run it now; otherwise only
+        // a document of few pages may, and only while the frame's time budget lasts. File size is
+        // no guide: a small file can hold hundreds of slow pages, which froze the window.
+        let inline = self.run_inline || cfg!(target_arch = "wasm32") || scan.pages.len() <= INLINE_SCAN_PAGES;
+        if inline {
+            let budget = (!self.run_inline && !cfg!(target_arch = "wasm32")).then_some(std::time::Instant::now() + INLINE_SCAN_BUDGET);
+            let (edits, finished) = find_redact_edits(&scan, budget);
+            if finished {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(Ok(edits));
+                self.redact_search_job = Some(job(rx));
+                self.poll_redact_search();
+                return;
+            }
+            // The pages took longer than the budget: the whole scan goes on off the UI thread.
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let work = move || {
-            let scan = RedactScan {
-                bytes,
-                password,
-                pages,
-                needles,
-                mode: d.mode,
-                pattern: d.pattern,
-                case_sensitive: d.case_sensitive,
-                whole_words: d.whole_words,
-                prefs,
-                author,
-            };
-            let _ = tx.send(Ok(find_redact_edits(scan)));
+            let (edits, _) = find_redact_edits(&scan, None);
+            let _ = tx.send(Ok(edits));
         };
-        // Tests and ordinary documents finish now; a large scan must not freeze the frame.
-        let inline = self.run_inline || bytes_len < (1 << 20);
-        if inline {
-            work();
-        } else {
-            #[cfg(not(target_arch = "wasm32"))]
-            if std::thread::Builder::new().name("pdfcraft-redact-search".into()).spawn(work).is_err() {
-                self.notify_tr("Could not start the redaction search");
-                return 0;
-            }
-            #[cfg(target_arch = "wasm32")]
-            work();
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::thread::Builder::new().name("pdfcraft-redact-search".into()).spawn(work).is_err() {
+            self.notify_tr("Could not start the redaction search");
+            return;
         }
-        self.redact_search_job = Some(RedactSearchJob { rx, doc: id, bytes: doc_bytes });
-        if inline {
-            self.poll_redact_search();
-            self.redact_search.found.unwrap_or(0)
-        } else {
-            self.notify_tr("Searching for redaction matches…");
-            0
-        }
+        #[cfg(target_arch = "wasm32")]
+        work();
+        self.redact_search_job = Some(job(rx));
+        self.notify_tr("Searching for redaction matches…");
     }
 
     /// Add the marks of a finished redaction search.
@@ -416,22 +455,22 @@ impl PdfCraftApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the redaction search stopped".to_string()),
         };
         let Some(job) = self.redact_search_job.take() else { return };
-        if self.active_ids().map(|(_, active)| active) != Some(job.doc)
-            || !self.session.get(job.doc).is_some_and(|d| std::sync::Arc::ptr_eq(&d.bytes, &job.bytes))
-        {
-            self.redact_search.found = Some(0);
+        // The marks were read from the document as it was: they are dropped, and said to be,
+        // rather than counted as "no matches", once it is not that document any more.
+        if !self.session.get(job.doc).is_some_and(|d| scan_is_current(&job, d)) {
+            self.redact_search.outcome = Some(SearchOutcome::DocumentChanged);
             return;
         }
         match result {
             Ok(edits) => {
                 let n = edits.len();
                 if n > 0 {
-                    self.apply_edit(Edit::Batch { label: "Mark for redaction".into(), edits });
+                    self.apply_edit_in(job.doc, Edit::Batch { label: "Mark for redaction".into(), edits });
                 }
-                self.redact_search.found = Some(n);
+                self.redact_search.outcome = Some(SearchOutcome::Marked(n));
             }
             Err(e) => {
-                self.redact_search.found = Some(0);
+                self.redact_search.outcome = None;
                 self.notify(e);
             }
         }
@@ -520,12 +559,12 @@ pub(crate) fn search_body(ui: &mut egui::Ui, d: &mut SearchDraft, t: &Tokens) ->
     });
     ui.add_space(6.0);
     ui.label(egui::RichText::new(tl!("Text in images isn't found; recognise text (OCR) first.")).small().color(t.text_faint));
-    if let Some(n) = d.found {
+    if let Some(outcome) = d.outcome {
         ui.label(
-            egui::RichText::new(if n == 0 {
-                tl!("No matches.").to_string()
-            } else {
-                crate::i18n::fmt(tl!("{n} match(es) marked for redaction."), &[("n", &n.to_string())])
+            egui::RichText::new(match outcome {
+                SearchOutcome::Marked(0) => tl!("No matches.").to_string(),
+                SearchOutcome::Marked(n) => crate::i18n::fmt(tl!("{n} match(es) marked for redaction."), &[("n", &n.to_string())]),
+                SearchOutcome::DocumentChanged => tl!("The document changed while searching, so nothing was marked. Search again.").to_string(),
             })
             .color(t.text_muted),
         );

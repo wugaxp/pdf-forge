@@ -2361,17 +2361,21 @@ fn certification_allows(edit: &Edit, level: u8) -> bool {
     }
 }
 
+/// The most restrictive DocMDP level of the document's signed certification signatures: a
+/// document can carry more than one, and the strictest one governs what may follow.
+fn certification_level(doc: &Document) -> Option<u8> {
+    doc.signatures.iter().filter(|s| s.signed).filter_map(|s| s.certify).min()
+}
+
 /// Signing or timestamping changes the file even when it adds no visible content; P=1 forbids it.
 fn check_certification_signature(doc: &Document, action: &str) -> Result<(), EditError> {
-    let Some(sig) = doc.signatures.iter().find(|s| s.signed && s.certify.is_some()) else { return Ok(()) };
-    let level = sig.certify.unwrap_or(0);
+    let Some(level) = certification_level(doc) else { return Ok(()) };
     if level == 1 { Err(EditError::Certification(level, action.to_owned())) } else { Ok(()) }
 }
 
 /// A certification signature is a write barrier, not only a post-hoc verdict.
 fn check_certification(doc: &Document, edit: &Edit) -> Result<(), EditError> {
-    let Some(sig) = doc.signatures.iter().find(|s| s.signed && s.certify.is_some()) else { return Ok(()) };
-    let level = sig.certify.unwrap_or(0);
+    let Some(level) = certification_level(doc) else { return Ok(()) };
     if certification_allows(edit, level) { Ok(()) } else { Err(EditError::Certification(level, edit.label().as_str().to_owned())) }
 }
 
@@ -4332,10 +4336,9 @@ impl Session {
             doc.info.file_size = bytes.len();
             #[cfg(test)]
             check_refresh_panic();
-            if !doc.signatures.is_empty() {
-                let signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
-                doc.signatures = Arc::new(signatures);
-            }
+            // Read again on every refresh: `check_certification` reads this list, so it is never
+            // kept as it was for a document it no longer describes.
+            doc.signatures = Arc::new(signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache));
             doc.bytes = bytes;
             return Ok(());
         }
@@ -4385,7 +4388,7 @@ impl Session {
         }
         doc.info.file_size = bytes.len();
         let needs_display = !doc.info.annotations.is_empty() || !doc.form.is_empty() || pdfcraft_forms::need_appearances(&editor.cos);
-        let signatures = if doc.signatures.is_empty() { Vec::new() } else { signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache) };
+        let signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
         doc.display = if needs_display { display_bytes(Some(editor), &bytes) } else { bytes.clone() };
         doc.signatures = Arc::new(signatures);
         if reuse_pool {
@@ -4456,7 +4459,7 @@ impl Session {
             doc.marker_scan = OnceLock::new();
         }
         doc.info.file_size = bytes.len();
-        let signatures = if doc.signatures.is_empty() { Vec::new() } else { signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache) };
+        let signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
         let needs_display = !doc.info.annotations.is_empty() || !doc.form.is_empty() || pdfcraft_forms::need_appearances(&editor.cos);
         doc.display = if needs_display { display_bytes(Some(editor), &bytes) } else { bytes.clone() };
         doc.signatures = Arc::new(signatures);
@@ -5408,7 +5411,7 @@ impl Session {
             let Some(editor) = doc.editor.as_mut() else { continue };
             // Keep verdict refresh and renderer refresh together. Viewer caches are
             // invalidated by the UI trust path; trust alone changes no document artwork.
-            let signatures = if doc.signatures.is_empty() { Vec::new() } else { signatures_of(&editor.cos, &doc.bytes, &doc.trust, &doc.sig_cache) };
+            let signatures = signatures_of(&editor.cos, &doc.bytes, &doc.trust, &doc.sig_cache);
             doc.display = display_bytes(Some(editor), &doc.bytes);
             doc.signatures = Arc::new(signatures);
             doc.renderer = RenderPool::new(doc.display.clone(), render_threads(), doc.config.clone());

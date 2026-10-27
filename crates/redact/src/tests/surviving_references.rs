@@ -105,3 +105,111 @@ fn an_image_another_page_draws_through_a_form_without_resources_is_kept() {
     assert_eq!(apply(&mut doc, None).unwrap().images_removed, 1);
     assert!(full_save_holds(&doc, b"IMAGESECRET"), "the second page still draws the image through its form");
 }
+
+/// The reference to a page's first content stream, whether `/Contents` names one stream or,
+/// as a rewrite leaves it, an array of them.
+fn first_content_ref(doc: &Document) -> ObjRef {
+    let page = pdfcraft_model::pages(doc).swap_remove(0);
+    let contents = page.dict.get(b"Contents").cloned().expect("the page has content");
+    match contents {
+        Object::Ref(r) => r,
+        Object::Array(a) => a.first().and_then(Object::as_ref).expect("the page's content array holds a stream"),
+        _ => panic!("the page's content is not a stream reference"),
+    }
+}
+
+/// A tagged PDF names its page's content stream from the structure tree: the `/MCR`'s `/Stm`
+/// and `/StmOwn` must follow the rewritten stream, or the old one — the removed text still in
+/// its bytes — keeps it in the saved file. The element's descriptions repeat the word too.
+#[test]
+fn a_tagged_mcr_reference_follows_the_rewritten_content_stream() {
+    for indirect in [false, true] {
+        // The marked content is named in place (a direct `/MCR` kid) or as an object of its own.
+        let kid = if indirect { "8 0 R".to_string() } else { "<< /Type /MCR /Pg 3 0 R /Stm 4 0 R /StmOwn 4 0 R /MCID 0 >>".to_string() };
+        let objs = vec![
+            b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R /MarkInfo << /Marked true >> >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /StructParents 0 /Resources << /Font << /F1 9 0 R >> >> >>"
+                .to_vec(),
+            stream("", b"/P << /MCID 0 >> BDC BT /F1 14 Tf 20 150 Td (Codename Bluefin) Tj ET BT /F1 14 Tf 20 50 Td (Visible words) Tj ET EMC"),
+            b"<< /Type /StructTreeRoot /K 6 0 R /ParentTree << /Nums [0 [7 0 R]] >> /ParentTreeNextKey 1 >>".to_vec(),
+            b"<< /Type /StructElem /S /Document /P 5 0 R >>".to_vec(),
+            format!("<< /Type /StructElem /S /P /P 6 0 R /Pg 3 0 R /K {kid} /ActualText (Codename Bluefin) /Alt (Codename Bluefin) >>").into_bytes(),
+            b"<< /Type /MCR /Pg 3 0 R /Stm 4 0 R /StmOwn 4 0 R /MCID 0 >>".to_vec(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
+        ];
+        let mut doc = pdf(objs);
+        mark(&mut doc, 0, &[[10.0, 140.0, 290.0, 170.0]], "");
+        let r = apply(&mut doc, None).unwrap();
+        assert!(r.glyphs > 0 && r.tags >= 1, "indirect: {indirect}, {r:?}");
+        // The reference follows the rewrite, `drawn` where the page now draws the marked content.
+        let contents = first_content_ref(&doc);
+        assert_ne!(contents, ObjRef::new(4, 0), "the page draws a rewritten stream (indirect: {indirect})");
+        let mcr = if indirect {
+            doc.get(ObjRef::new(8, 0)).as_dict().cloned().unwrap()
+        } else {
+            let element = doc.get(ObjRef::new(7, 0)).as_dict().cloned().unwrap();
+            doc.resolve(element.get(b"K").unwrap()).as_dict().cloned().unwrap()
+        };
+        assert_eq!(mcr.get(b"Stm").and_then(Object::as_ref), Some(contents), "indirect: {indirect}, {mcr:?}");
+        assert_eq!(mcr.get(b"StmOwn").and_then(Object::as_ref), Some(contents), "indirect: {indirect}, {mcr:?}");
+        // Neither the old stream nor the element's descriptions keep the removed words.
+        assert!(!full_save_holds(&doc, b"Codename Bluefin"), "the removed text is still reachable (indirect: {indirect})");
+        assert!(full_save_holds(&doc, b"Visible words"), "the search sees the saved content (indirect: {indirect})");
+    }
+}
+
+/// Sanitize removes hidden text the same way, and the tagged tree follows its rewritten stream
+/// just as a redaction's does.
+#[test]
+fn hidden_text_removal_repairs_a_tagged_mcr_reference_too() {
+    let objs = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R /MarkInfo << /Marked true >> >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /StructParents 0 /Resources << /Font << /F1 9 0 R >> >> >>".to_vec(),
+        stream("", b"/P << /MCID 0 >> BDC BT /F1 14 Tf 20 150 Td 3 Tr (Codename Bluefin) Tj 0 Tr (Visible words) Tj ET EMC"),
+        b"<< /Type /StructTreeRoot /K 6 0 R /ParentTree << /Nums [0 [7 0 R]] >> /ParentTreeNextKey 1 >>".to_vec(),
+        b"<< /Type /StructElem /S /Document /P 5 0 R >>".to_vec(),
+        b"<< /Type /StructElem /S /P /P 6 0 R /Pg 3 0 R /K << /Type /MCR /Pg 3 0 R /Stm 4 0 R /MCID 0 >> /Alt (Codename Bluefin) >>".to_vec(),
+        b"<< >>".to_vec(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
+    ];
+    let mut doc = pdf(objs);
+    let done = crate::sanitize::remove_hidden(&mut doc, &[crate::sanitize::Hidden::HiddenText]).unwrap();
+    assert!(done.contains(&(crate::sanitize::Hidden::HiddenText, 16)), "{done:?}");
+    let contents = first_content_ref(&doc);
+    assert_ne!(contents, ObjRef::new(4, 0), "the page draws a rewritten stream");
+    let element = doc.get(ObjRef::new(7, 0)).as_dict().cloned().unwrap();
+    let mcr = doc.resolve(element.get(b"K").unwrap()).as_dict().cloned().unwrap();
+    assert_eq!(mcr.get(b"Stm").and_then(Object::as_ref), Some(contents), "{mcr:?}");
+    assert!(!full_save_holds(&doc, b"Codename Bluefin"), "the hidden text is still reachable");
+    assert!(full_save_holds(&doc, b"Visible words"), "the search sees the saved content");
+}
+
+/// A second reference to the replaced content stream — a name tree value, a catalog key or a
+/// marked-content reference no element's `/K` reaches — keeps the removed text in the saved
+/// file whatever the page shows. The redaction is refused rather than reporting success with
+/// the text still reachable, and a refused document is left as it was.
+#[test]
+fn a_second_reference_to_a_replaced_content_stream_refuses_the_redaction() {
+    let seconds: [&[u8]; 4] =
+        [b"/Names << /Names [(spare) 4 0 R] >>", b"/PieceInfo 4 0 R", b"/PCShare [4 0 R]", b"/PCRef << /Type /MCR /Pg 3 0 R /Stm 4 0 R /MCID 0 >>"];
+    for second in seconds {
+        let mut catalog = b"<< /Type /Catalog /Pages 2 0 R ".to_vec();
+        catalog.extend_from_slice(second);
+        catalog.extend_from_slice(b" >>");
+        let objs = vec![
+            catalog,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+            stream("", b"BT /F1 10 Tf 10 100 Td (AB1234CD) Tj ET"),
+            FONT.replace("95 0 R", "6 0 R").into_bytes(),
+            widths(),
+        ];
+        let mut doc = pdf(objs);
+        mark(&mut doc, 0, &[[20.0, 95.0, 40.0, 110.0]], "");
+        let before = write_full(&doc, &SaveOptions::default()).unwrap();
+        assert!(matches!(apply(&mut doc, None), Err(RedactError::ReplacedStreamReachable)), "{second:?}");
+        assert_eq!(write_full(&doc, &SaveOptions::default()).unwrap(), before, "the refused document is unchanged ({second:?})");
+    }
+}

@@ -95,7 +95,6 @@
 	Side panels	ແຜງດ້ານຂ້າງ
 	Enable Acrobat JavaScript	ເປີດໃຊ້ງານ Acrobat JavaScript
 	OK	ຕົກລົງ
-	Join our Discord	ເຂົ້າຮ່ວມ Discord ຂອງພວກເຮົາ
 	Close	ປິດ
 	Next / previous match	ຜົນການຄົ້ນຫາ ຖັດໄປ / ກ່ອນໜ້າ
 	Copy selected text	ສຳເນົາຂໍ້ຄວາມທີ່ເລືອກ
@@ -163,10 +162,8 @@
 	Next page	ໜ້າຖັດໄປ
 	Previous page	ໜ້າກ່ອນໜ້າ
 	Current page — type a page number or label (such as iv) and press Enter	ໜ້າປັດຈຸບັນ — ພິມໝາຍເລກໜ້າ ຫຼື ປ້າຍຊື່ (ເຊັ່ນ: iv) ແລ້ວກົດ Enter
-	Welcome to PdfCraft	ຍິນດີຕ້ອນຮັບສູ່ PdfCraft
+	Welcome to PDF Forge	ຍິນດີຕ້ອນຮັບສູ່ PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	ເຄື່ອງມືຈັດການ PDF ແບບໂອເພນຊອຣ໌ສ — ເຮັດວຽກໃນເຄື່ອງ, ເປັນສ່ວນຕົວ ແລະ ຂຽນສະຄຣິບໄດ້.
-	Join the ArtCraft community	ເຂົ້າຮ່ວມຊຸມຊົນ ArtCraft
-	Get help, share feedback and follow development on Discord.	ຂໍຄວາມຊ່ວຍເຫຼືອ, ແບ່ງປັນຄຳຕິຊົມ ແລະ ຕິດຕາມການພັດທະນາໄດ້ທີ່ Discord.
 	Recommended tools	ເຄື່ອງມືແນະນຳ
 	Use now	ໃຊ້ງານຕອນນີ້
 	Open file	ເປີດໄຟລ໌
@@ -311,12 +308,9 @@
 	Split document…	ແບ່ງເອກະສານ…
 	Number pages…	ໃສ່ເລກໜ້າ…
 	Keyboard shortcuts	ປຸ່ມລັດແປ້ນພິມ
-	Join the ArtCraft Discord	ເຂົ້າຮ່ວມ Discord ຂອງ ArtCraft
-	PdfCraft web page	ໜ້າເວັບ PdfCraft
-	PdfCraft on GitHub	PdfCraft ເທິງ GitHub
-	ArtCraft website	ເວັບໄຊຕ໌ ArtCraft
+	PDF Forge on GitHub	PDF Forge ເທິງ GitHub
 	Check for updates…	ກວດສອບການອັບເດດ…
-	About PdfCraft	ກ່ຽວກັບ PdfCraft
+	About PDF Forge	ກ່ຽວກັບ PDF Forge
 	Export a PDF	ສົ່ງອອກ PDF
 	Export to	ສົ່ງອອກໄປເປັນ
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -777,9 +771,9 @@
 	Check for updates	ກວດສອບການອັບເດດ
 	No check has run yet.	ຍັງບໍ່ທັນມີການກວດສອບເທື່ອ.
 	Checking for a newer version…	ກຳລັງກວດສອບເວີຊັນໃໝ່…
-	PdfCraft {v} is available.	ມີ PdfCraft {v} ພ້ອມໃຫ້ໃຊ້ງານແລ້ວ.
+	PDF Forge {v} is available.	ມີ PDF Forge {v} ພ້ອມໃຫ້ໃຊ້ງານແລ້ວ.
 	You have version {c}. Download the new version from its release page.	ທ່ານກຳລັງໃຊ້ເວີຊັນ {c}. ດາວໂຫຼດເວີຊັນໃໝ່ໄດ້ຈາກໜ້າ release.
-	PdfCraft {c} is up to date.	PdfCraft {c} ເປັນເວີຊັນລ່າສຸດແລ້ວ.
+	PDF Forge {c} is up to date.	PDF Forge {c} ເປັນເວີຊັນລ່າສຸດແລ້ວ.
 	Couldn't check for updates: {e}	ບໍ່ສາມາດກວດສອບການອັບເດດໄດ້: {e}
 	You have version {c}. All releases are listed at {page}.	ທ່ານກຳລັງໃຊ້ເວີຊັນ {c}. ລາຍການ release ທັງໝົດແມ່ນສະແດງຢູ່ທີ່ {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	ກວດສອບລຸ້ນລ່າສຸດຈາກ GitHub. ຈະບໍ່ມີການດາວໂຫຼດ ຫຼື ຕິດຕັ້ງໂດຍອັດຕະໂນມັດ.
@@ -1414,7 +1408,6 @@
 	Discard	ປະຖິ້ມ
 	Version {v}	ເວີຊັນ {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	ແອັບພລິເຄຊັນ PDF ໂອເພນຊອດແບບ clean-room ທີ່ຂຽນດ້ວຍ Rust. ພາຍໃຕ້ສັນຍາອະນຸຍາດ MIT ຫຼື Apache-2.0.
-	Part of	ສ່ວນໜຶ່ງຂອງ
 	Summarize Options	ຕົວເລືອກການສະຫຼຸບ
 	Choose a layout:	ເລືອກໂຄງຮ່າງ:
 	Comments only	ສະເພາະຄວາມເຫັນ
@@ -1809,7 +1802,6 @@
 	This document is secured. Some changes are restricted by its security settings.	ເອກະສານນີ້ຖືກປ້ອງກັນໄວ້. ການປ່ຽນແປງບາງຢ່າງຖືກຈຳກັດໂດຍການຕັ້ງຄ່າຄວາມປອດໄພ.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	ນີ້ແມ່ນຟອມ XFA ແບບໄດນາມິກ ເຊິ່ງ PdfCraft ຍັງບໍ່ສາມາດສະແດງຜົນໄດ້. ສິ່ງທີ່ທ່ານເຫັນແມ່ນໜ້າຕົວແທນຊົ່ວຄາວຂອງໄຟລ໌.
 	This form's scripts are turned off because one ran too long. Reopen the document to run them again.	ສະຄຣິບຂອງຟອມນີ້ຖືກປິດເນື່ອງຈາກບາງສະຄຣິບເຮັດວຽກດົນເກີນໄປ. ເປີດເອກະສານຄືນໃໝ່ເພື່ອໃຫ້ສະຄຣິບເຮັດວຽກອີກຄັ້ງ.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	ຟອມນີ້ຍັງມີຂໍ້ມູນ XFA ທີ່ PdfCraft ຍັງບໍ່ສາມາດອ່ານໄດ້. ທ່ານສາມາດຕື່ມຂໍ້ມູນລົງໃນຊ່ອງໄດ້, ແຕ່ Acrobat ອາດຈະສະແດງຄ່າ XFA ແທນ.
 	This document contains {n} interactive form fields.	ເອກະສານນີ້ບັນຈຸ {n} ຊ່ອງຟອມແບບໂຕ້ຕອບ.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	ໄຟລ໌ນີ້ເຄີຍເສຍຫາຍ ແລະ ໄດ້ຮັບການສ້ອມແປງແລ້ວ. ການບັນທຶກຈະຮັກສາເວີຊັນທີ່ສ້ອມແປງແລ້ວໄວ້.
 	Dismiss	ປິດໄປ

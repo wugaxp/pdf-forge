@@ -207,6 +207,7 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
     }
     let mut doc = doc.clone();
     stamp_mod_date(&mut doc, opts);
+    materialize_trailer_dicts(&mut doc);
     let original = doc.bytes().clone();
     // The revision is written on its own and joined to the original at the end, so the result is
     // allocated once at its exact size: growing a buffer that holds a large original past a
@@ -275,6 +276,7 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
     // own). Parsed objects and decoded object streams are temporary working data here.
     let mut reader = doc.object_reader();
     stamp_mod_date(&mut reader.document, opts);
+    materialize_trailer_dicts(&mut reader.document);
     let trailer_in = reader.document.trailer().clone();
     // Breadth-first walk from the trailer, assigning new numbers in visit order.
     let mut map: HashMap<ObjRef, u32> = HashMap::new();
@@ -458,10 +460,12 @@ fn output_number(index: usize) -> Result<u32, CosError> {
 /// Objects added since the file was read (their numbers are not in use in it) that nothing an
 /// incremental update writes refers to: what one edit added and a later one unlinked, such as a
 /// deleted comment or a cleared redaction mark. The file never held them, so leaving them out
-/// loses nothing, while writing them would keep what the user removed. Only the update is walked:
-/// from the trailer and the file's changed objects through additions. An unchanged object of the
-/// file is not followed: a reference it holds to such a number already reads as null in the file
-/// (a damaged file's dangling reference), and it still does.
+/// loses nothing, while writing them would keep what the user removed. The update is walked:
+/// from the trailer and the file's changed objects through additions. What an unchanged object
+/// of the file names counts as a reference too, even where it dangles in the file (a damaged
+/// file's reference, or one past its `/Size`): [`Document::add`] can hand such a number to an
+/// addition, and writing that free would leave the saved file pointing at nothing where the
+/// file itself points at the addition.
 pub(crate) fn unlinked_additions(doc: &Document) -> HashSet<u32> {
     let added = |num: u32| matches!(doc.xref_entry(num), None | Some(XrefEntry::Free { .. }));
     let mut pending: HashMap<u32, Arc<Object>> =
@@ -477,6 +481,17 @@ pub(crate) fn unlinked_additions(doc: &Document) -> HashSet<u32> {
         {
             collect_refs(&o, &mut |r| stack.push(r));
         }
+    }
+    // The file's own unchanged objects: every reference they hold to an added number is a link
+    // the saved file will carry, so the addition it names is kept and walked like any other.
+    let unchanged: Vec<u32> = doc.object_numbers().into_iter().filter(|num| !doc.is_edited(*num)).collect();
+    for (_, o) in doc.scan_objects_subset(unchanged) {
+        let Ok(o) = o else { continue };
+        collect_refs(&o, &mut |r| {
+            if pending.contains_key(&r.num) {
+                stack.push(r);
+            }
+        });
     }
     while let Some(r) = stack.pop() {
         if let Some(o) = pending.remove(&r.num) {
@@ -605,12 +620,30 @@ fn stamp_mod_date(doc: &mut Document, opts: &SaveOptions) {
         Some(Object::Ref(r)) => {
             let _ = doc.update_dict(r, |d| d.set(b"ModDate".to_vec(), date.clone()));
         }
+        // A direct `/Info` is updated where it is: replacing it with a fresh dictionary would
+        // drop the entries it carries (its `/Title`, `/Author`, …).
+        Some(Object::Dict(mut d)) => {
+            d.set(b"ModDate".to_vec(), date);
+            doc.trailer_mut().set(b"Info".to_vec(), Object::Dict(d));
+        }
         _ => {
             let mut info = Dict::new();
             info.set(b"ModDate".to_vec(), date);
             let r = doc.add(info);
             doc.trailer_mut().set(b"Info".to_vec(), Object::Ref(r));
         }
+    }
+}
+
+/// Give a direct `/Root` or `/Info` trailer dictionary an object number of its own, written as
+/// the indirect value a cross-reference entry can name (§7.5.5: the trailer's `/Root` and
+/// `/Info` are indirect references). A full rewrite walks objects from those references: kept
+/// direct, the catalog's pages and the whole `/Info` dictionary would be left out of the file.
+fn materialize_trailer_dicts(doc: &mut Document) {
+    for key in [&b"Root"[..], b"Info"] {
+        let Some(Object::Dict(d)) = doc.trailer().get(key).cloned() else { continue };
+        let r = doc.add(Object::Dict(d));
+        doc.trailer_mut().set(key.to_vec(), Object::Ref(r));
     }
 }
 

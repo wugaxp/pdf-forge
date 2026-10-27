@@ -144,7 +144,7 @@
 	Accessibility	Tilgjengelighet
 	Help…	Hjelp…
 	Check for updates…	Se etter oppdateringer…
-	About PdfCraft	Om PdfCraft
+	About PDF Forge	Om PDF Forge
 	Automatically	Automatisk
 	Never	Aldri
 	Always	Alltid
@@ -612,7 +612,6 @@
 	From {file}	Fra {file}
 	From:	Fra:
 	Front side only	Bare forsiden
-	Get help, share feedback and follow development on Discord.	Få hjelp, gi tilbakemelding og følg utviklingen på Discord.
 	Go to a page view	Gå til en sidevisning
 	Go to page {p}	Gå til side {p}
 	Go to the page	Gå til siden
@@ -664,8 +663,6 @@
 	JavaScript Console	JavaScript-konsoll
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript er slått av (Innstillinger > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, f.eks. getField("total").value
-	Join our Discord	Bli med på Discord-serveren vår
-	Join the ArtCraft community	Bli med i ArtCraft-fellesskapet
 	Justify	Blokkjuster
 	Keep source fonts	Behold kildeskrifter
 	Keep tool selected	Behold verktøyet valgt
@@ -856,7 +853,6 @@
 	Pages:	Sider:
 	Pages: {k} of {n}	Sider: {k} av {n}
 	Paper:	Papir:
-	Part of	Del av
 	Password	Passord
 	Password required	Passord kreves
 	Password security	Passordsikkerhet
@@ -868,8 +864,8 @@
 	Patterns (graphics objects)	Mønstre (grafikkobjekter)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft ble ikke avsluttet normalt. Disse dokumentene hadde endringer som ble autolagret:
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft fungerer uten nett. Ingen telemetri, ingen konto og ingen skybehandling med mindre du legger til en leverandør.
-	PdfCraft {c} is up to date.	PdfCraft {c} er oppdatert.
-	PdfCraft {v} is available.	PdfCraft {v} er tilgjengelig.
+	PDF Forge {c} is up to date.	PDF Forge {c} er oppdatert.
+	PDF Forge {v} is available.	PDF Forge {v} er tilgjengelig.
 	Percentage	Prosent
 	Permissions password	Tillatelsespassord
 	Permitted actions after certifying	Tillatte handlinger etter sertifisering
@@ -1261,7 +1257,7 @@
 	Visible Rectangle	Synlig rektangel
 	Visual	Visuell
 	Warnings	Advarsler
-	Welcome to PdfCraft	Velkommen til PdfCraft
+	Welcome to PDF Forge	Velkommen til PDF Forge
 	What word or phrase would you like to search for?	Hvilket ord eller hvilken frase vil du søke etter?
 	Whole words only	Bare hele ord
 	Width:	Bredde:
@@ -1338,7 +1334,6 @@
 	Archive documents	Arkiver dokumenter
 	Area	Areal
 	Arrow	Pil
-	ArtCraft website	ArtCraft-nettsted
 	Ask about this document	Spør om dette dokumentet
 	Attach a file	Legg ved en fil
 	Attach file	Legg ved fil
@@ -1477,7 +1472,6 @@
 	Insert text	Sett inn tekst
 	JavaScript	JavaScript
 	JavaScript console…	JavaScript-konsoll…
-	Join the ArtCraft Discord	Bli med i ArtCraft-Discorden
 	Light gray	Lys grå
 	Line	Linje
 	Link	Lenke
@@ -1508,8 +1502,7 @@
 	Page options	Sidealternativer
 	Page transitions	Sideoverganger
 	Paste pages	Lim inn sider
-	PdfCraft on GitHub	PdfCraft på GitHub
-	PdfCraft web page	PdfCraft-nettside
+	PDF Forge on GitHub	PDF Forge på GitHub
 	Perimeter	Omkrets
 	Pin folder to Home…	Fest mappe til Hjem…
 	PostScript / EPS	PostScript / EPS
@@ -2346,7 +2339,6 @@
 	This document has no form fields.	Dette dokumentet har ingen skjemafelt.
 	This document has no layers.	Dette dokumentet har ingen lag.
 	This file is already as small as it can be made ({size}). No copy was saved.	Denne filen er allerede så liten som den kan bli ({size}). Ingen kopi ble lagret.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Dette skjemaet inneholder også XFA-data, som PdfCraft ikke leser ennå. Du kan fylle ut feltene, men Acrobat kan vise XFA-verdiene i stedet.
 	Thumbnails	Miniatyrbilder
 	Timed responses	Tidsbegrensede svar
 	Type Password	Skriv inn passord

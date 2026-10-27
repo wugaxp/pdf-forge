@@ -50,11 +50,21 @@ the document. Reduce the marked area, disable repeated text, or apply fewer page
 This limits appearance generation; it is not a limit on the input PDF or the whole process's memory.
 
 Structure cleanup resolves named MCIDs and indirect content references. Form content
-references are updated to the cleaned copy; unchanged sibling descriptions remain. The structure
+references are updated to the cleaned copy; unchanged sibling descriptions remain. The same
+holds for the page's own content: every `/MCR` that names a rewritten stream through `/Stm` or
+`/StmOwn` is repointed at its rewrite, so the old stream — whose bytes still hold the removed
+text — is not kept reachable through the structure tree. The structure
 tree's object references (`/OBJR`) to the annotations and form fields `apply` removes are dropped,
 as Sanitize drops them, so a full rewrite of a tagged PDF can't keep a removed comment or field value.
 A tree where that can't be done (an element written in place, or one too large to walk) makes
 `apply` fail with `RedactError::Tags` rather than leave the annotation reachable.
+
+A rewritten content stream is swept out of the file like a replaced form's: what a page no
+longer draws must not stay reachable through another resource dictionary, and nothing else may
+name the old stream without drawing it. An object that still does — an `/MCR` that could not be
+repointed, a name tree, a catalog key or `/PieceInfo` — would keep the removed text in the saved
+file, so `apply` fails with `RedactError::ReplacedStreamReachable` instead. A page that shares
+the stream keeps drawing it, and is not under a mark there, so a shared stream is left alone.
 
 Replacement descriptions (`/Alt`, `/ActualText`, `/E`) are removed from marked-content spans
 changed by cleanup, from every structure element above them (found through both `/P` and `/K`),

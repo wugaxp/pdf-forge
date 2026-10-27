@@ -1,8 +1,12 @@
 name: Release
 
+# Builds every release artefact and drafts a GitHub release through the suite's shared release
+# workflow in craft-common-actions. This is a personal fork:
+# - runs are dispatched by hand from `main`, because the shared workflow *requires* the suite's
+#   Apple/Windows/Azure signing secrets on `refs/heads/release` and a personal fork has none;
+# - no signing secrets are passed (all of them are optional there), so the artefacts are unsigned
+#   until the maintainer adds them to a `release` environment and lists them below.
 on:
-  push:
-    branches: [release]
   workflow_dispatch:
     inputs:
       version:
@@ -19,25 +23,13 @@ concurrency:
 
 jobs:
   release:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/release.yml@main
+    # SHA-pinned: a personal fork does not track craft-common-actions' moving `main`; bump this
+    # ref deliberately after reading the shared workflow's changes.
+    uses: storytold/craft-common-actions/.github/workflows/release.yml@be6bbf3ca5a5de466786908b3986163da7c05314
     with:
+      # The artefacts and binaries keep the technical name `pdfcraft`; the display name is the
+      # fork's brand (README, "Known limits").
       app-name: pdfcraft
-      app-title: PdfCraft
+      app-title: PDF Forge
       craft-fonts-ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
       version: ${{ inputs.version }}
-    secrets:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-      AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}

@@ -203,12 +203,21 @@ impl<'a> Tlv<'a> {
         oid_to_string(self.value)
     }
 
-    /// A non-negative INTEGER that fits in a u64.
+    /// A non-negative INTEGER that fits in a u64. Leading zero bytes (a sign byte, or padding)
+    /// are dropped before the value is folded: nine significant bytes would overflow the u64,
+    /// and folding them would silently shift the high byte away.
     pub fn u64(&self) -> Result<u64, SignError> {
-        if self.tag != tag::INTEGER || self.value.is_empty() || self.value.len() > 9 || self.value[0] & 0x80 != 0 {
+        if self.tag != tag::INTEGER || self.value.is_empty() || self.value[0] & 0x80 != 0 {
             return Err(bad("expected a small non-negative INTEGER"));
         }
-        Ok(self.value.iter().fold(0u64, |acc, b| (acc << 8) | *b as u64))
+        let mut v: &[u8] = self.value;
+        while v.first() == Some(&0) {
+            v = &v[1..];
+        }
+        if v.len() > 8 {
+            return Err(bad("expected a small non-negative INTEGER"));
+        }
+        Ok(v.iter().fold(0u64, |acc, b| (acc << 8) | *b as u64))
     }
 
     /// The magnitude of an INTEGER (leading zero dropped).
@@ -612,5 +621,20 @@ mod tests {
         assert_eq!(Time::from_unix(-10_000_000_000_000), Time { year: 4_294_652_378, month: 8, day: 13, hour: 6, minute: 13, second: 20 });
         assert_eq!(Time::from_unix(i64::MAX), Time { year: 219_250_468, month: 12, day: 4, hour: 15, minute: 30, second: 7 });
         assert_eq!(Time::from_unix(i64::MIN), Time { year: 4_075_720_767, month: 1, day: 27, hour: 8, minute: 29, second: 52 });
+    }
+
+    /// A nine-byte INTEGER is the sign padding of a full u64; nine significant bytes do not fit
+    /// and are refused, never folded into a truncated value.
+    #[test]
+    fn integers_fold_without_truncating() {
+        // The sign byte of a u64 with its top bit set, and padding of more than one byte.
+        assert_eq!(Tlv::parse_all(&uint(&u64::MAX.to_be_bytes())).unwrap().u64().unwrap(), u64::MAX);
+        let padded = [0u8, 0u8].iter().chain(&1u64.to_be_bytes()).copied().collect::<Vec<u8>>();
+        assert_eq!(Tlv::parse_all(&tlv(tag::INTEGER, &padded)).unwrap().u64().unwrap(), 1);
+        assert_eq!(Tlv::parse_all(&tlv(tag::INTEGER, &[0])).unwrap().u64().unwrap(), 0);
+        // Nine significant bytes: 2^64 and more. Folding them used to shift the high byte away.
+        let nine = [1u8].iter().chain(&u64::MAX.to_be_bytes()).copied().collect::<Vec<u8>>();
+        assert!(Tlv::parse_all(&tlv(tag::INTEGER, &nine)).unwrap().u64().is_err());
+        assert!(Tlv::parse_all(&tlv(tag::INTEGER, &[0x80])).unwrap().u64().is_err(), "negative");
     }
 }

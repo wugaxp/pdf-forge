@@ -1,9 +1,9 @@
 <!--
-Thanks for contributing to PdfCraft.
+Thanks for contributing to PDF Forge, a personal fork of PdfCraft.
 
-Base this on `main` — it is the only integration branch. `main` moves fast (it took
-396 commits in the three days to 2026-10-12), so a PR that sits for a day usually needs
-a rebase. Rebasing the same day you are asked keeps the work from dying of conflicts.
+Base this on `main` — it is the only integration branch. It moves slowly here, but a PR
+that sits while `main` moves under it still needs a rebase; rebasing as soon as you are
+asked keeps the work from dying of conflicts.
 Delete any section below that does not apply.
 -->
 

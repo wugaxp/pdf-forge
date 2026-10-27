@@ -732,7 +732,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         }
                         // Right to left: close, "…", filter, search (Acrobat's order left to right).
                         if panel == RightPanel::Comments {
-                            panel_command = crate::comments_panel::header_controls(ui, info, view, doc.comments_hidden());
+                            panel_command = crate::comments_panel::header_controls(ui, info, view, doc.comments_hidden(), doc.edit_generation());
                         }
                         if panel == RightPanel::Comments
                             && icons::button(ui, "search", 26.0, view.comments.search.is_some(), tl!("Search comments")).clicked()
@@ -822,7 +822,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match panel {
                     RightPanel::Comments => {
-                        if let Some(e) = crate::comments_panel::show(ui, &t, info, view, prefs, comment_allowed, &mut nav) {
+                        if let Some(e) = crate::comments_panel::show(ui, &t, info, view, prefs, comment_allowed, &mut nav, doc.edit_generation()) {
                             panel_edit = Some(e);
                         }
                     }
@@ -851,7 +851,10 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         }
                     }
                     RightPanel::Pages => pages(ui, &t, info, view, modal, bm_editable, &mut nav),
-                    RightPanel::Fields => field_properties = fields(ui, &t, info, &doc.form, preparing, &mut view.prepare, &mut nav, &mut panel_edit),
+                    RightPanel::Fields => {
+                        field_properties =
+                            fields(ui, &t, info, &doc.form, doc.edit_generation(), preparing, &mut view.prepare, &mut nav, &mut panel_edit)
+                    }
                     RightPanel::Layers => {
                         if info.layers.is_empty() {
                             empty(ui, &t, "layers", "This document has no layers.");
@@ -971,7 +974,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
         app.a11y_action(index, a);
     }
     if let Some(a) = compare_action {
-        app.compare_action(index, a);
+        app.compare_action(a);
     }
     match sig_action {
         Some(crate::sign_ui::PanelAction::Validate) => app.run_command("sign.validate"),
@@ -1214,9 +1217,22 @@ fn outline_item(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, item: &OutlineIte
         if !item.children.is_empty() {
             let tri = Rect::from_min_size(pos2(x0, rect.top() + 6.0), vec2(16.0, 16.0));
             icons::paint(ui, tri, if open { "chevron-down" } else { "chevron-right" }, 14.0, t.text_muted);
-            if !cx.searching && ui.interact(tri, id.with("tri"), Sense::click()).clicked() {
-                open = !open;
-                ui.data_mut(|d| d.insert_temp(id, open));
+            if !cx.searching {
+                // Named for the bookmark it opens: one unnamed triangle per row told a screen
+                // reader nothing. The row itself is the button named after the bookmark.
+                let toggle = ui.interact(tri, id.with("tri"), Sense::click());
+                toggle.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Button,
+                        true,
+                        open,
+                        format!("{} {}", if open { tl!("Collapse") } else { tl!("Expand") }, item.title),
+                    )
+                });
+                if toggle.clicked() {
+                    open = !open;
+                    ui.data_mut(|d| d.insert_temp(id, open));
+                }
             }
         }
         ui.painter().galley(pos2(x0 + 20.0, rect.top() + 6.0), galley, t.text);
@@ -1595,6 +1611,7 @@ fn fields(
     t: &Tokens,
     info: &DocInfo,
     form: &[pdfcraft_engine::FormField],
+    generation: u64,
     preparing: bool,
     selection: &mut crate::prepare::PrepareView,
     nav: &mut Option<Nav>,
@@ -1605,7 +1622,7 @@ fn fields(
         empty(ui, t, "text-cursor-input", "This document has no form fields.");
         return None;
     }
-    let rows = field_rows(&info.fields, form);
+    let rows = Rows::of(&info.fields, form, generation, selection);
     if preparing {
         ui.label(egui::RichText::new(tl!("Tab order: move a field with its arrows.")).small().color(t.text_muted));
         ui.label(egui::RichText::new(tl!("Shift- or Ctrl/Command-click to select several fields.")).small().color(t.text_muted));
@@ -1619,7 +1636,7 @@ fn fields(
             }
         });
     }
-    for (p, page_rows) in rows {
+    for (p, page_rows) in &rows.rows {
         // A field's /P can name a page the document doesn't have (#1307); it reads as unplaced.
         let label = p
             .and_then(|p| info.pages.get(p))
@@ -1627,7 +1644,8 @@ fn fields(
             .unwrap_or_else(|| tl!("Unplaced").to_string());
         ui.add_space(4.0);
         ui.label(egui::RichText::new(label).font(theme::semibold(12.5)).color(t.text_muted));
-        for (f, key) in page_rows {
+        for (i, key) in page_rows {
+            let f = &info.fields[*i];
             let selected = key.as_ref().is_some_and(|key| selection.selected.as_ref() == Some(key) || selection.also.contains(key));
             let icon = match f.kind {
                 FieldKind::Text => "text-cursor-input",
@@ -1684,13 +1702,13 @@ fn fields(
                     if !selected {
                         selection.select(key.clone(), false);
                     }
-                    properties = Some(key);
+                    properties = Some(key.clone());
                 }
             } else if preparing
                 && resp.clicked()
                 && let Some(key) = key
             {
-                selection.select(key, ui.input(|i| i.modifiers.shift || i.modifiers.command));
+                selection.select(key.clone(), ui.input(|i| i.modifiers.shift || i.modifiers.command));
             }
             let resp = theme::hand(resp);
             // Only a row in view can be hovered: its tip isn't built for the others.
@@ -1719,27 +1737,56 @@ fn field_tip(f: &pdfcraft_render::Field) -> String {
 }
 
 /// One page's rows of the Fields panel: each field, with the form field and widget a click on
-/// it selects (`None` when the form has no widget of it on that page).
-type FieldRows<'a> = Vec<(&'a pdfcraft_render::Field, Option<(String, usize)>)>;
+/// it selects (`None` when the form has no widget of it on that page). A row names its field by
+/// index into `info.fields`, so the rows can be kept.
+type FieldRows = Vec<(usize, Option<(String, usize)>)>;
+
+/// The Fields panel's rows, kept per view until the document changes: building them made a map
+/// and sorted every field on every frame a large form was open.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Rows {
+    /// The edit generation of the document these rows were read at.
+    generation: u64,
+    /// By page ("Unplaced" first), each page's in tab order.
+    rows: Vec<(Option<usize>, FieldRows)>,
+}
+
+impl Rows {
+    /// The panel's rows for `fields`/`form`, kept in `selection` until the document changes.
+    fn of(
+        fields: &[pdfcraft_render::Field],
+        form: &[pdfcraft_engine::FormField],
+        generation: u64,
+        selection: &mut crate::prepare::PrepareView,
+    ) -> std::sync::Arc<Rows> {
+        if let Some(rows) = selection.field_rows.as_ref().filter(|rows| rows.generation == generation) {
+            return rows.clone();
+        }
+        let rows = std::sync::Arc::new(Rows { generation, rows: field_rows(fields, form) });
+        selection.field_rows = Some(rows.clone());
+        rows
+    }
+}
 
 /// The Fields panel's rows: by page ("Unplaced" first), each page's in tab order. A row is paired
 /// with the first form field of its name, as the engine pairs them: one map, built once a frame.
 /// Searching the form for each row, and again inside the sort, was O(fields²) every frame.
-fn field_rows<'a>(fields: &'a [pdfcraft_render::Field], form: &[pdfcraft_engine::FormField]) -> Vec<(Option<usize>, FieldRows<'a>)> {
+fn field_rows(fields: &[pdfcraft_render::Field], form: &[pdfcraft_engine::FormField]) -> Vec<(Option<usize>, FieldRows)> {
     let mut by_name: std::collections::HashMap<&str, &pdfcraft_engine::FormField> = std::collections::HashMap::with_capacity(form.len());
     for field in form {
         by_name.entry(field.name.as_str()).or_insert(field);
     }
     let rank = |name: &str| by_name.get(name).and_then(|f| f.widgets.iter().map(|w| w.tab).min()).unwrap_or(usize::MAX);
-    let mut ordered: Vec<&pdfcraft_render::Field> = fields.iter().collect();
-    ordered.sort_by_cached_key(|f| (f.page, rank(&f.name)));
-    let mut rows: Vec<(Option<usize>, FieldRows<'a>)> = Vec::new();
-    for f in ordered {
+    let mut ordered: Vec<usize> = (0..fields.len()).collect();
+    ordered.sort_by_cached_key(|&i| (fields[i].page, rank(&fields[i].name)));
+    let mut rows: Vec<(Option<usize>, FieldRows)> = Vec::new();
+    for i in ordered {
+        let f = &fields[i];
         let key =
             by_name.get(f.name.as_str()).and_then(|field| field.widgets.iter().position(|w| w.page == f.page).map(|wi| (field.name.clone(), wi)));
         match rows.last_mut() {
-            Some((page, page_rows)) if *page == f.page => page_rows.push((f, key)),
-            _ => rows.push((f.page, vec![(f, key)])),
+            Some((page, page_rows)) if *page == f.page => page_rows.push((i, key)),
+            _ => rows.push((f.page, vec![(i, key)])),
         }
     }
     rows
@@ -1842,7 +1889,7 @@ mod field_rows {
         type Named<'a> = Vec<(&'a str, Option<(String, usize)>)>;
         let rows: Vec<(Option<usize>, Named)> = field_rows(&fields, &form)
             .into_iter()
-            .map(|(page, rows)| (page, rows.into_iter().map(|(f, key)| (f.name.as_str(), key)).collect()))
+            .map(|(page, rows)| (page, rows.into_iter().map(|(i, key)| (fields[i].name.as_str(), key)).collect()))
             .collect();
         let key = |name: &str| Some((name.to_string(), 0));
         assert_eq!(

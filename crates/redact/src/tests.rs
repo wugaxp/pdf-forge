@@ -1732,12 +1732,15 @@ fn a_tag_walk_cut_short_is_refused() {
     let page = ObjRef::new(3, 0);
     let changed: std::collections::HashSet<i64> = [0].into();
     let mut doc = pdf(objs.clone());
-    assert_eq!(crate::tags::clean_within(&mut doc, page, None, &changed, &Default::default(), 100).unwrap(), 1);
+    assert_eq!(crate::tags::clean_within(&mut doc, page, crate::tags::Streams::Page(&[]), &changed, &Default::default(), 100).unwrap(), 1);
     let figure = doc.get(ObjRef::new(8, 0)).as_dict().cloned().unwrap();
     assert!(figure.contains(b"Alt"), "a walk that finishes keeps an unrelated element's text");
 
     let mut doc = pdf(objs);
-    assert!(matches!(crate::tags::clean_within(&mut doc, page, None, &changed, &Default::default(), 1), Err(RedactError::Tags)));
+    assert!(matches!(
+        crate::tags::clean_within(&mut doc, page, crate::tags::Streams::Page(&[]), &changed, &Default::default(), 1),
+        Err(RedactError::Tags)
+    ));
 }
 
 /// #2532 follow-up: an element reached only through the parent tree or the ID tree, not from

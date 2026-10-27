@@ -459,6 +459,11 @@ fn tab(
     });
     let x_rect = Rect::from_center_size(rect.right_center() - vec2(16.0, 0.0), vec2(20.0, 20.0));
     let x = ui.interact(x_rect, id.with("close"), Sense::click());
+    // Named for the tab it closes: the strip has one of these per tab, and an unnamed button
+    // is all a screen reader used to get. The name is logical order, as the tab's own is.
+    let close_label = crate::i18n::fmt(tl!("Close {name}"), &[("name", name)]);
+    x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), close_label.clone()));
+    let x = x.on_hover_text(close_label);
     let x_press = theme::Press::track(ui, &x);
     x_press.wash(ui, x_rect, 4, false);
     // Unsaved changes: a dot where the close button sits, until the tab is hovered.

@@ -983,7 +983,7 @@ fn dropping_a_pdf_on_the_window_opens_it() {
     h.input_mut().dropped_files.push(file);
     support::wait_until(&mut h, "dropped document", |app| app.views.len() == 1 && app.password_prompt.is_none());
     assert_eq!(h.state().views.len(), 1, "the dropped PDF opens in a tab");
-    h.get_by_label_contains("dropped.pdf");
+    h.query_all_by_label_contains("dropped.pdf").next().expect("the dropped PDF tab");
     let (_, id) = h.state().active_ids().unwrap();
     let doc = h.state().session.get(id).unwrap();
     assert_eq!(doc.name, "dropped.pdf");
@@ -1115,7 +1115,7 @@ fn files_and_quit_from_the_operating_system() {
     support::wait_until(&mut h, "the file the operating system opened", |app| !app.views.is_empty());
     std::fs::remove_file(&path).ok();
     assert_eq!(h.state().views.len(), 1, "the file opens in a tab");
-    h.get_by_label_contains(&name);
+    h.query_all_by_label_contains(&name).next().expect("the opened PDF tab");
     // A file opened while the app runs brings its window forward, even minimized or full screen
     // on another Space.
     std::fs::write(&path, FIXTURE).unwrap();
@@ -1349,13 +1349,14 @@ fn three_tab_harness() -> Harness<'static, PdfCraftApp> {
 }
 
 fn close_named_tab(h: &mut Harness<'static, PdfCraftApp>, name: &str) {
-    // The close button has no separate accessible label. Its centre is defined by
-    // chrome::tab relative to the actual accessible tab rectangle, not a viewport guess.
-    let pos = h.get_by_role_and_label(egui::accesskit::Role::Tab, name).rect().right_center() - egui::vec2(16.0, 0.0);
-    h.event(egui::Event::PointerMoved(pos));
-    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-    h.run_steps(1);
-    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    // The tab's close button is named for the tab it closes. A dirty tab may be labelled with
+    // its edited title or its file name; both names close the same tab.
+    let stem = name.split(" (edited)").next().unwrap_or(name);
+    let expected = format!("Close {name}");
+    let fallback = format!("Close {stem}");
+    let close =
+        h.query_all_by_label(&expected).next().or_else(|| h.query_all_by_label(&fallback).next()).unwrap_or_else(|| h.get_by_label(&expected));
+    close.click();
     h.run_steps(3);
 }
 
@@ -1405,11 +1406,11 @@ fn closing_the_last_active_tab_selects_the_previous_one_then_home() {
 fn cancelling_then_discarding_an_earlier_dirty_tab_preserves_the_selected_document() {
     let mut h = three_tab_harness();
     let ids: Vec<_> = h.state().views.iter().map(|view| view.id).collect();
-    h.get_by_label("first.pdf").click();
-    h.run_steps(3);
+    h.get_by_role_and_label(egui::accesskit::Role::Tab, "first.pdf").click();
+    h.run_steps(2);
     assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::SetInfo { key: "Title".into(), value: "Unsaved title".into() }));
-    h.run_steps(3);
-    h.get_by_label("middle.pdf").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::Tab, "middle.pdf").click();
     h.run_steps(3);
     close_named_tab(&mut h, "first.pdf (edited)");
     assert_eq!(h.state().close_request, Some(pdfcraft_ui_egui::CloseRequest::Tab(ids[0])));

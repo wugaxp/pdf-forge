@@ -211,7 +211,7 @@ fn redacting_an_imported_word_list() {
     h.get_by_label("3 word(s) or phrase(s)");
     h.get_by_label("Mark all").click();
     h.run_steps(3);
-    assert_eq!((marks(&h), h.state().redact_search.found), (3, Some(3)));
+    assert_eq!((marks(&h), h.state().redact_search.outcome), (3, Some(pdfcraft_ui_egui::RedactSearchOutcome::Marked(3))));
     let too_big = vec![b'a'; 2 << 20];
     h.state_mut().use_files(pdfcraft_ui_egui::FilePurpose::RedactWords, vec![("huge.txt".into(), too_big)]);
     assert_eq!(h.state().redact_search.words, "Ada\nprivate\nabsent", "an oversized list changes nothing");
@@ -236,7 +236,117 @@ fn redaction_search_can_match_case_and_whole_words() {
     assert!(h.state().redact_search.whole_words && h.state().redact_search.case_sensitive);
     h.get_by_label("Mark all").click();
     h.run_steps(3);
-    assert_eq!((marks(&h), h.state().redact_search.found), (2, Some(2)));
+    assert_eq!((marks(&h), h.state().redact_search.outcome), (2, Some(pdfcraft_ui_egui::RedactSearchOutcome::Marked(2))));
+}
+
+/// `n` pages of "Ada is private": tiny on disk, but every page is work for a search, which reads
+/// every page's text.
+fn many_pages(n: usize) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Count {n} /Kids [{}] >>", (0..n).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" ")),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for i in 0..n {
+        let content = "BT /F1 18 Tf 72 700 Td (Ada is private) Tj ET";
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            5 + 2 * i
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").bytes());
+    }
+    out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+    out
+}
+
+fn many_page_harness(n: usize) -> Harness<'static, PdfCraftApp> {
+    Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("big.pdf", None, many_pages(n)).unwrap();
+        app
+    })
+}
+
+/// A search runs off the UI thread when a document has many pages, however small the file is:
+/// the page count says how much work reading every page's text is, not the bytes on disk. A
+/// document of few pages is searched at once, on the UI thread.
+#[test]
+fn a_search_of_many_pages_runs_off_the_ui_thread() {
+    let mut h = many_page_harness(20);
+    h.run_steps(4);
+    h.state_mut().redact_search.text = "Ada".into();
+    h.state_mut().redact_search();
+    assert!(h.state().redact_search.outcome.is_none(), "still scanning: not on the UI thread");
+    // The marks land when the scan is through. Wait by a deadline, not a frame count, which a
+    // loaded machine can use up before the worker is done.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while h.state().redact_search.outcome.is_none() {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(std::time::Instant::now() < deadline, "the search never finished");
+    }
+    assert_eq!(h.state().redact_search.outcome, Some(pdfcraft_ui_egui::RedactSearchOutcome::Marked(20)));
+    assert_eq!(marks(&h), 20);
+    // Two pages: small work is done before the first repaint.
+    let mut small = many_page_harness(2);
+    small.run_steps(4);
+    small.state_mut().redact_search.text = "Ada".into();
+    small.state_mut().redact_search();
+    assert_eq!(small.state().redact_search.outcome, Some(pdfcraft_ui_egui::RedactSearchOutcome::Marked(2)), "small work runs inline");
+}
+
+/// A search whose document changed while it ran has its marks thrown away — and says that is
+/// what happened: "0 matches" would claim the document was searched and had none.
+#[test]
+fn a_search_whose_document_changed_reports_that_instead_of_no_matches() {
+    let mut h = many_page_harness(20);
+    h.run_steps(4);
+    h.state_mut().redact_search.text = "Ada".into();
+    h.state_mut().redact_search();
+    assert!(h.state().redact_search.outcome.is_none(), "the scan is off the UI thread");
+    // The document changes before the scan is through (no frame runs in between, so the result
+    // cannot land first).
+    h.state_mut().apply_edit(pdfcraft_engine::Edit::RotatePages { pages: vec![0], degrees: 90 });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while h.state().redact_search.outcome.is_none() {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(std::time::Instant::now() < deadline, "the search never finished");
+    }
+    assert_eq!(h.state().redact_search.outcome, Some(pdfcraft_ui_egui::RedactSearchOutcome::DocumentChanged));
+    assert_eq!(marks(&h), 0, "marks read from an older document are not applied");
+}
+
+/// One scan at a time: a second search while one runs is refused rather than dropping the first
+/// one's result while its worker keeps reading the whole document.
+#[test]
+fn a_second_search_waits_for_the_first() {
+    let mut h = many_page_harness(20);
+    h.run_steps(4);
+    h.state_mut().redact_search.text = "Ada".into();
+    h.state_mut().redact_search();
+    h.state_mut().redact_search();
+    assert_eq!(h.state().toast.clone().map(|(m, _)| m), Some("A search is already running".to_string()));
+    assert!(h.state().redact_search.outcome.is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while h.state().redact_search.outcome.is_none() {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(std::time::Instant::now() < deadline, "the search never finished");
+    }
+    assert_eq!(h.state().redact_search.outcome, Some(pdfcraft_ui_egui::RedactSearchOutcome::Marked(20)), "the first search's marks land");
 }
 
 #[test]

@@ -85,7 +85,6 @@
 	Side panels	แผงด้านข้าง
 	Enable Acrobat JavaScript	เปิดใช้ Acrobat JavaScript
 	OK	ตกลง
-	Join our Discord	เข้าร่วม Discord ของเรา
 	Close	ปิด
 	Next / previous match	ผลลัพธ์ถัดไป / ก่อนหน้า
 	Copy selected text	คัดลอกข้อความที่เลือก
@@ -153,10 +152,8 @@
 	Next page	หน้าถัดไป
 	Previous page	หน้าก่อนหน้า
 	Current page — type a page number or label (such as iv) and press Enter	หน้าปัจจุบัน — พิมพ์เลขหน้าหรือป้ายหน้า (เช่น iv) แล้วกด Enter
-	Welcome to PdfCraft	ยินดีต้อนรับสู่ PdfCraft
+	Welcome to PDF Forge	ยินดีต้อนรับสู่ PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	โต๊ะทำงาน PDF แบบโอเพนซอร์ส — ทำงานในเครื่อง เป็นส่วนตัว และเขียนสคริปต์ได้
-	Join the ArtCraft community	เข้าร่วมชุมชน ArtCraft
-	Get help, share feedback and follow development on Discord.	ขอความช่วยเหลือ ส่งความคิดเห็น และติดตามการพัฒนาได้ที่ Discord
 	Recommended tools	เครื่องมือแนะนำ
 	Use now	ใช้ตอนนี้
 	Open file	เปิดไฟล์
@@ -301,12 +298,9 @@
 	Split document…	แบ่งเอกสาร…
 	Number pages…	ใส่เลขหน้า…
 	Keyboard shortcuts	แป้นพิมพ์ลัด
-	Join the ArtCraft Discord	เข้าร่วม Discord ของ ArtCraft
-	PdfCraft web page	หน้าเว็บ PdfCraft
-	PdfCraft on GitHub	PdfCraft บน GitHub
-	ArtCraft website	เว็บไซต์ ArtCraft
+	PDF Forge on GitHub	PDF Forge บน GitHub
 	Check for updates…	ตรวจหาการอัปเดต…
-	About PdfCraft	เกี่ยวกับ PdfCraft
+	About PDF Forge	เกี่ยวกับ PDF Forge
 	Export a PDF	ส่งออก PDF
 	Export to	ส่งออกเป็น
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -762,9 +756,9 @@
 	Check for updates	ตรวจหาการอัปเดต
 	No check has run yet.	ยังไม่ได้ตรวจสอบ
 	Checking for a newer version…	กำลังตรวจหารุ่นที่ใหม่กว่า…
-	PdfCraft {v} is available.	มี PdfCraft {v} ให้ใช้งานแล้ว
+	PDF Forge {v} is available.	มี PDF Forge {v} ให้ใช้งานแล้ว
 	You have version {c}. Download the new version from its release page.	คุณใช้รุ่น {c} ดาวน์โหลดรุ่นใหม่ได้จากหน้ารุ่นที่เผยแพร่
-	PdfCraft {c} is up to date.	PdfCraft {c} เป็นรุ่นล่าสุดแล้ว
+	PDF Forge {c} is up to date.	PDF Forge {c} เป็นรุ่นล่าสุดแล้ว
 	Couldn't check for updates: {e}	ตรวจหาการอัปเดตไม่ได้: {e}
 	You have version {c}. All releases are listed at {page}.	คุณใช้รุ่น {c} รายการรุ่นทั้งหมดอยู่ที่ {page}
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	ถาม GitHub ว่ามีรุ่นล่าสุดหรือไม่ จะไม่มีการดาวน์โหลดหรือติดตั้งโดยอัตโนมัติ
@@ -1390,7 +1384,6 @@
 	Discard	ละทิ้ง
 	Version {v}	รุ่น {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	โปรแกรม PDF โอเพนซอร์สที่เขียนขึ้นใหม่ทั้งหมดด้วยภาษา Rust สัญญาอนุญาต MIT หรือ Apache-2.0
-	Part of	ส่วนหนึ่งของ
 	Summarize Options	ตัวเลือกการสรุป
 	Choose a layout:	เลือกเค้าโครง:
 	Comments only	ความคิดเห็นเท่านั้น
@@ -1780,7 +1773,6 @@
 	This document is secured. Some changes are restricted by its security settings.	เอกสารนี้มีการรักษาความปลอดภัย การเปลี่ยนแปลงบางอย่างถูกจำกัดโดยการตั้งค่าความปลอดภัย
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	นี่เป็นแบบฟอร์ม XFA แบบไดนามิก ซึ่ง PdfCraft ยังแสดงไม่ได้ สิ่งที่คุณเห็นคือหน้าตัวแทนของไฟล์
 	This form's scripts are turned off because one ran too long. Reopen the document to run them again.	สคริปต์ของแบบฟอร์มนี้ถูกปิดเพราะมีสคริปต์ทำงานนานเกินไป เปิดเอกสารใหม่เพื่อรันอีกครั้ง
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	แบบฟอร์มนี้มีข้อมูล XFA ด้วย ซึ่ง PdfCraft ยังอ่านไม่ได้ คุณกรอกช่องได้ แต่ Acrobat อาจแสดงค่าของ XFA แทน
 	This document contains {n} interactive form fields.	เอกสารนี้มีช่องแบบฟอร์มแบบโต้ตอบ {n} ช่อง
 	This file was damaged and has been repaired. Saving keeps the repaired version.	ไฟล์นี้เสียหายและได้รับการซ่อมแซมแล้ว การบันทึกจะเก็บรุ่นที่ซ่อมแซมไว้
 	Dismiss	ปิดข้อความ

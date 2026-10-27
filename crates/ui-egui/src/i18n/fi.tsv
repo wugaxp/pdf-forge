@@ -91,7 +91,6 @@
 	Side panels	Sivupaneelit
 	Enable Acrobat JavaScript	Ota Acrobat JavaScript käyttöön
 	OK	OK
-	Join our Discord	Liity Discordiimme
 	Close	Sulje
 	Next / previous match	Seuraava / edellinen osuma
 	Copy selected text	Kopioi valittu teksti
@@ -159,10 +158,8 @@
 	Next page	Seuraava sivu
 	Previous page	Edellinen sivu
 	Current page — type a page number or label (such as iv) and press Enter	Nykyinen sivu – kirjoita sivunumero tai -tunniste (kuten iv) ja paina Enter
-	Welcome to PdfCraft	Tervetuloa PdfCraftiin
+	Welcome to PDF Forge	Tervetuloa PDF Forgeiin
 	An open-source PDF workbench — local, private, and scriptable.	Avoimen lähdekoodin PDF-työpöytä – paikallinen, yksityinen ja skriptattava.
-	Join the ArtCraft community	Liity ArtCraft-yhteisöön
-	Get help, share feedback and follow development on Discord.	Hae apua, anna palautetta ja seuraa kehitystä Discordissa.
 	Recommended tools	Suositellut työkalut
 	Use now	Käytä nyt
 	Open file	Avaa tiedosto
@@ -307,12 +304,9 @@
 	Split document…	Jaa asiakirja…
 	Number pages…	Numeroi sivut…
 	Keyboard shortcuts	Pikanäppäimet
-	Join the ArtCraft Discord	Liity ArtCraftin Discordiin
-	PdfCraft web page	PdfCraftin verkkosivu
-	PdfCraft on GitHub	PdfCraft GitHubissa
-	ArtCraft website	ArtCraftin verkkosivusto
+	PDF Forge on GitHub	PDF Forge GitHubissa
 	Check for updates…	Tarkista päivitykset…
-	About PdfCraft	Tietoja PdfCraftista
+	About PDF Forge	Tietoja PDF Forgeista
 	Export a PDF	Vie PDF
 	Export to	Vie muotoon
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -767,9 +761,9 @@
 	Check for updates	Tarkista päivitykset
 	No check has run yet.	Tarkistusta ei ole vielä tehty.
 	Checking for a newer version…	Tarkistetaan uudempaa versiota…
-	PdfCraft {v} is available.	PdfCraft {v} on saatavilla.
+	PDF Forge {v} is available.	PDF Forge {v} on saatavilla.
 	You have version {c}. Download the new version from its release page.	Käytössä on versio {c}. Lataa uusi versio sen julkaisusivulta.
-	PdfCraft {c} is up to date.	PdfCraft {c} on ajan tasalla.
+	PDF Forge {c} is up to date.	PDF Forge {c} on ajan tasalla.
 	Couldn't check for updates: {e}	Päivitysten tarkistus epäonnistui: {e}
 	You have version {c}. All releases are listed at {page}.	Käytössä on versio {c}. Kaikki julkaisut on lueteltu sivulla {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	Kysyy uusinta julkaisua GitHubista. Mitään ei ladata tai asenneta automaattisesti.
@@ -1396,7 +1390,6 @@
 	Discard	Hylkää
 	Version {v}	Versio {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Puhtaan huoneen menetelmällä kehitetty avoimen lähdekoodin PDF-sovellus, kirjoitettu Rustilla. MIT OR Apache-2.0.
-	Part of	Osa kokonaisuutta
 	Summarize Options	Yhteenvedon asetukset
 	Choose a layout:	Valitse asettelu:
 	Comments only	Vain kommentit
@@ -1774,7 +1767,6 @@
 	At least one signature has problems.	Vähintään yhdessä allekirjoituksessa on ongelmia.
 	This document is secured. Some changes are restricted by its security settings.	Tämä asiakirja on suojattu. Sen suojausasetukset rajoittavat joitakin muutoksia.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Tämä on dynaaminen XFA-lomake, jota PdfCraft ei vielä osaa näyttää. Näet tiedoston paikkamerkkisivun.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Tämä lomake sisältää myös XFA-tietoja, joita PdfCraft ei vielä lue. Voit täyttää kentät, mutta Acrobat saattaa näyttää XFA-arvot niiden sijaan.
 	This document contains {n} interactive form fields.	Tässä asiakirjassa on {n} vuorovaikutteista lomakekenttää.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Tämä tiedosto oli vioittunut, ja se on korjattu. Tallennus säilyttää korjatun version.
 	Dismiss	Sulje

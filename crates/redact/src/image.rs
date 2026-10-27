@@ -94,6 +94,10 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
         false
     };
     let mut cleared = 0usize;
+    // The overlapping columns of a row are one run per region: every pixel box moves
+    // monotonically with the column. Regions' runs are merged, and whole bytes of them are
+    // filled at once; only the two edges of a run are bit by bit.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     for j in 0..h {
         // Image space has its origin at the bottom left; row 0 is at the top.
         let v0 = 1.0 - (j + 1) as f64 / h as f64;
@@ -102,28 +106,28 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
         if !rects.iter().any(|r| overlaps(*r, row_box, 0.0)) {
             continue;
         }
-        for i in 0..w {
-            let u0 = i as f64 / w as f64;
-            let u1 = (i + 1) as f64 / w as f64;
-            // The bounding box may cover extra pixels for a rotated or skewed image; that
-            // conservative over-clear prevents a touched sample surviving in the file.
-            let pixel_box = ctm.bbox([u0, v0, u1, v1]);
-            if !rects.iter().any(|r| overlaps(*r, pixel_box, 0.0)) {
-                continue;
-            }
-            cleared += 1;
-            // `bytes * 8` fits, and every bit index is below it, so this arithmetic can't overflow.
-            let start = j * row_bits + i * bits_per_pixel;
-            for bit in start..start + bits_per_pixel {
-                let (byte, shift) = (bit / 8, 7 - bit % 8);
-                let b = data.get_mut(byte)?;
-                if clear_bit {
-                    *b |= 1 << shift;
-                } else {
-                    *b &= !(1 << shift);
-                }
+        spans.clear();
+        for r in rects {
+            if let Some(span) = covered_columns(ctm, *r, v0, v1, w) {
+                spans.push(span);
             }
         }
+        if spans.is_empty() {
+            continue;
+        }
+        spans.sort_unstable();
+        let (mut lo, mut hi) = spans[0];
+        for span in spans.iter().copied().skip(1) {
+            if span.0 <= hi + 1 {
+                hi = hi.max(span.1);
+                continue;
+            }
+            cleared += hi - lo + 1;
+            clear_columns(&mut data, j * row_bits + lo * bits_per_pixel, j * row_bits + (hi + 1) * bits_per_pixel, clear_bit)?;
+            (lo, hi) = span;
+        }
+        cleared += hi - lo + 1;
+        clear_columns(&mut data, j * row_bits + lo * bits_per_pixel, j * row_bits + (hi + 1) * bits_per_pixel, clear_bit)?;
     }
     if cleared == 0 {
         return Some(None);
@@ -133,4 +137,102 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     dict.remove(b"DecodeParms");
     dict.remove(b"Alternates");
     Some(Some(Stream::flate(dict, &data)))
+}
+
+/// The first and last column of a row whose pixel box overlaps `r`, or `None` when no pixel
+/// does. The box of a pixel moves monotonically with the column, so the columns passing the
+/// exact per-pixel test form one run: found from that test's four comparisons without ever
+/// transforming a pixel twice.
+fn covered_columns(ctm: &Matrix, r: [f64; 4], v0: f64, v1: f64, w: usize) -> Option<(usize, usize)> {
+    // A region with no width or height never overlaps (the test is strict), and a transform
+    // that maps every pixel box onto a line or point never does either.
+    let [a, b, c, d, _, _] = ctm.0;
+    if !(r[0] < r[2] && r[1] < r[3]) || (a == 0.0 && c == 0.0) || (b == 0.0 && d == 0.0) {
+        return None;
+    }
+    let pixel_box = |i: usize| ctm.bbox([i as f64 / w as f64, v0, (i + 1) as f64 / w as f64, v1]);
+    let (mut lo, mut hi) = (0, w.checked_sub(1)?);
+    for run in [
+        true_run(|i| pixel_box(i)[2] > r[0], w),
+        true_run(|i| pixel_box(i)[0] < r[2], w),
+        true_run(|i| pixel_box(i)[3] > r[1], w),
+        true_run(|i| pixel_box(i)[1] < r[3], w),
+    ] {
+        let (first, last) = run?;
+        lo = lo.max(first);
+        hi = hi.min(last);
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
+/// The columns where the monotone predicate `p` holds, which is one run of them (the pixel box
+/// comparisons it stands for only move one way with the column).
+fn true_run(p: impl Fn(usize) -> bool, w: usize) -> Option<(usize, usize)> {
+    if p(0) {
+        if p(w - 1) {
+            return Some((0, w - 1));
+        }
+        // True first, then false: find where it turns.
+        let (mut lo, mut hi) = (0, w - 1);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if p(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Some((0, lo))
+    } else {
+        if !p(w - 1) {
+            return None;
+        }
+        // False first, then true: find where it turns.
+        let (mut lo, mut hi) = (0, w - 1);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if p(mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        Some((hi, w - 1))
+    }
+}
+
+/// Set (an inverted mask's cleared sample) or clear every bit in `[start, end)`, whole bytes at
+/// a time where a byte is covered. `bytes * 8` fits and every index is below it, so this
+/// arithmetic can't overflow; a byte outside the data refuses the image.
+fn clear_columns(data: &mut [u8], start: usize, end: usize, set: bool) -> Option<()> {
+    let mut bit = start;
+    // A partial first byte is the only one bit by bit, up to the last whole byte.
+    if !bit.is_multiple_of(8) {
+        let take = (8 - bit % 8).min(end - bit);
+        for b in bit..bit + take {
+            let (byte, shift) = (b / 8, 7 - b % 8);
+            let v = data.get_mut(byte)?;
+            if set {
+                *v |= 1 << shift;
+            } else {
+                *v &= !(1 << shift);
+            }
+        }
+        bit += take;
+    }
+    let whole = (end - bit) / 8 * 8;
+    if whole > 0 {
+        data.get_mut(bit / 8..(bit + whole) / 8)?.fill(if set { 0xFF } else { 0x00 });
+        bit += whole;
+    }
+    for b in bit..end {
+        let (byte, shift) = (b / 8, 7 - b % 8);
+        let v = data.get_mut(byte)?;
+        if set {
+            *v |= 1 << shift;
+        } else {
+            *v &= !(1 << shift);
+        }
+    }
+    Some(())
 }

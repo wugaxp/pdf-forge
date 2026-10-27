@@ -97,6 +97,115 @@ fn closing_either_half_of_a_side_by_side_comparison_keeps_the_app_running() {
     }
 }
 
+/// `n` pages of "Delivery within {word} days.": tiny on disk, but every page is work for a
+/// comparison, which reads every word and rasterizes every page.
+fn many_pages(n: usize, word: &str) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Count {n} /Kids [{}] >>", (0..n).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" ")),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for i in 0..n {
+        let content = format!("BT /F1 18 Tf 72 700 Td (Delivery within {word} days.) Tj ET");
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            5 + 2 * i
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").bytes());
+    }
+    out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+    out
+}
+
+/// A comparison runs off the UI thread when the documents have many pages, however small the
+/// files are. Closing one of its tabs while it runs drops the comparison: its result describes
+/// a document that is gone, and must not land on (or shade) another tab.
+#[test]
+fn closing_a_tab_during_a_comparison_drops_it_instead_of_shading_another_tab() {
+    let (v1, v2) = (many_pages(20, "five"), many_pages(20, "three"));
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("v1.pdf", None, v1.clone()).unwrap();
+        app.open_bytes("v2.pdf", None, v2.clone()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().compare_old = h.state().views.first().map(|v| v.id);
+    h.state_mut().run_compare();
+    assert!(h.state().compare.is_none(), "documents of this size are compared off the UI thread");
+    assert_eq!(h.state().toast.clone().map(|(m, _)| m), Some("Comparing…".to_string()));
+    // The new file's tab closes while the worker runs. No frame runs in between, so the result
+    // cannot land first.
+    let new = h.state().active_ids().unwrap().1;
+    let i = h.state().views.iter().position(|v| v.id == new).unwrap();
+    h.state_mut().views[i].close_requested = true;
+    // The run may land before the close is processed; either way it does not survive its
+    // document. Wait by a deadline, not a frame count: a loaded machine can use frames up
+    // before the worker is done.
+    let settled = |h: &Harness<'static, PdfCraftApp>| h.state().compare.is_some() || h.state().toast.clone().is_some_and(|(m, _)| m != "Comparing…");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !settled(&h) {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(std::time::Instant::now() < deadline, "the comparison never finished");
+    }
+    h.run_steps(6);
+    assert!(h.state().compare.is_none(), "the comparison does not survive its document");
+    assert!(h.state().views.iter().all(|v| v.compare_marks.is_empty()), "nothing is shaded on the tab left");
+}
+
+/// Tabs can be dragged elsewhere or closed while a comparison is up. Its shading follows the
+/// documents it was computed from, wherever their tabs are now — never the tab index the run
+/// started at.
+#[test]
+fn moving_tabs_around_a_comparison_keeps_it_on_its_documents() {
+    let s = Session::new();
+    let v1 = s.create_from_text("t", "Delivery within five days. Returns accepted.").unwrap().to_vec();
+    let v2 = s.create_from_text("t", "Delivery within three days. Returns accepted for a week.").unwrap().to_vec();
+    let other = s.create_from_text("t", "Unrelated notes.").unwrap().to_vec();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("v1.pdf", None, v1.clone()).unwrap();
+        app.open_bytes("other.pdf", None, other.clone()).unwrap();
+        app.open_bytes("v2.pdf", None, v2.clone()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().compare_old = h.state().views.first().map(|v| v.id);
+    h.state_mut().run_compare();
+    h.run_steps(3);
+    let (old, new) = {
+        let c = h.state().compare.as_ref().unwrap();
+        (c.old, c.new)
+    };
+    // The tabs move and one closes: [v1, other, v2] → [v2, v1, other] → [v2, v1].
+    h.state_mut().move_tab(2, 0);
+    h.state_mut().close_tab(2);
+    h.state_mut().active = h.state().views.iter().position(|v| v.id == new);
+    h.run_steps(3);
+    // The panel's Show filter shades again, and it lands on the same two documents.
+    h.get_by_label("Visual").click();
+    h.run_steps(3);
+    let st = h.state();
+    assert!(st.compare.is_some(), "both documents are unchanged");
+    assert_eq!(st.views.len(), 2);
+    assert!(!st.views.iter().find(|v| v.id == old).unwrap().compare_marks.is_empty(), "the old file is shaded");
+    assert!(!st.views.iter().find(|v| v.id == new).unwrap().compare_marks.is_empty(), "the new file is shaded");
+}
+
 /// Two versions whose differences are of both kinds: a replaced word (text) and a rectangle
 /// drawn far below the text (visual only, no text change explains it).
 fn text_and_visual_versions() -> (Vec<u8>, Vec<u8>) {

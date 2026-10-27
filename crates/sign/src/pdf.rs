@@ -532,12 +532,18 @@ fn sig_fields(doc: &Document) -> Vec<Field> {
         };
         let ft = d.name(b"FT").map(<[u8]>::to_vec).or(inherited_ft);
         let kids: Vec<Object> = d.get(b"Kids").map(|k| doc.resolve(k)).and_then(|k| k.as_array().cloned()).unwrap_or_default();
-        // Kids with a /T are fields; others are this field's widgets.
-        let (sub, widgets): (Vec<Object>, Vec<Object>) = kids.into_iter().partition(|k| doc.resolve(k).as_dict().is_some_and(|kd| kd.contains(b"T")));
+        // Kids with a /T are fields; others are this field's widgets. A kid that names its own
+        // /FT /Sig and holds a signature value is a field of its own, named or not: its
+        // signature must not be taken for a widget's.
+        let (sub, widgets): (Vec<Object>, Vec<Object>) = kids
+            .into_iter()
+            .partition(|k| doc.resolve(k).as_dict().is_some_and(|kd| kd.contains(b"T") || (kd.name(b"FT") == Some(b"Sig") && kd.contains(b"V"))));
         for k in sub.into_iter().rev() {
             stack.push((k, name.clone(), ft.clone()));
         }
-        if ft.as_deref() == Some(b"Sig") && part.is_some() {
+        // A signature field is a signature field whatever its /T says: one without a name keeps
+        // its parent's (which may be empty).
+        if ft.as_deref() == Some(b"Sig") {
             let mut ws: Vec<(Option<ObjRef>, Dict)> =
                 widgets.iter().filter_map(|w| doc.resolve(w).as_dict().cloned().map(|wd| (w.as_ref(), wd))).collect();
             if d.name(b"Subtype") == Some(b"Widget") {
@@ -566,6 +572,39 @@ fn nums(doc: &Document, d: &Dict, key: &[u8]) -> Option<Vec<f64>> {
     doc.resolve(d.get(key)?).as_array().map(|a| a.iter().filter_map(|x| doc.resolve(x).as_f64()).collect())
 }
 
+/// A listing entry for a signature that is not the value of any field (a standalone document
+/// timestamp, or a certification signature the catalog alone names): `field` names its role,
+/// and there is no widget to show it in.
+fn fieldless_info(field: &str, doc_timestamp: bool) -> SignatureInfo {
+    SignatureInfo {
+        field: field.to_string(),
+        signed: true,
+        page: None,
+        rect: None,
+        visible: false,
+        signer: None,
+        certificate: None,
+        chain: Vec::new(),
+        date: None,
+        signing_time: None,
+        reason: None,
+        location: None,
+        contact: None,
+        sub_filter: None,
+        doc_timestamp,
+        certify: None,
+        revision: 0,
+        signed_len: 0,
+        digest: None,
+        algorithm: None,
+        timestamp: false,
+        timestamp_time: None,
+        status: Status::Unknown,
+        modification: Modification::None,
+        details: Vec::new(),
+    }
+}
+
 /// List and validate every signature field. `bytes` is the file as stored (the ranges index it).
 pub fn list(doc: &Document, bytes: &[u8], trust: &TrustStore) -> Vec<SignatureInfo> {
     list_cached(doc, bytes, trust, &DigestCache::default())
@@ -577,6 +616,7 @@ pub fn list_cached(doc: &Document, bytes: &[u8], trust: &TrustStore, cache: &Dig
     let pages = annot_pages(doc);
     let mut out = Vec::new();
     let mut field_values: HashSet<ObjRef> = HashSet::new();
+    let mut value_dicts: Vec<Dict> = Vec::new();
     for f in sig_fields(doc) {
         if let Some(v_ref) = f.dict.get(b"V").and_then(Object::as_ref) {
             field_values.insert(v_ref);
@@ -592,6 +632,9 @@ pub fn list_cached(doc: &Document, bytes: &[u8], trust: &TrustStore, cache: &Dig
         let flags = widget.and_then(|(_, w)| w.get(b"F")).and_then(|o| doc.resolve(o).as_int()).unwrap_or(0);
         let visible = rect.is_some_and(|r| r[2] - r[0] > 0.5 && r[3] - r[1] > 0.5) && flags & (2 | 32) == 0;
         let v = f.signature(doc);
+        if let Some(v) = &v {
+            value_dicts.push(v.clone());
+        }
         let mut info = SignatureInfo {
             field: f.name.clone(),
             signed: v.is_some(),
@@ -624,6 +667,18 @@ pub fn list_cached(doc: &Document, bytes: &[u8], trust: &TrustStore, cache: &Dig
         }
         out.push(info);
     }
+    // A certification signature the catalog names in `/Perms /DocMDP` but no field holds
+    // (ISO 32000-2 §12.8.2.2): it is a signature of the document all the same, and the
+    // certification it carries is what bounds the edits that follow it.
+    if let Some((r, v)) = perms_certification(doc)
+        && !r.is_some_and(|r| field_values.contains(&r))
+        && !value_dicts.contains(&v)
+    {
+        field_values.extend(r);
+        let mut info = fieldless_info("Certification", false);
+        validate_into(doc, bytes, trust, &v, &mut info, cache);
+        out.push(info);
+    }
     // Standalone document timestamps (ISO 32000-2 §12.8.2.2) live outside AcroForm fields.
     let candidates = cache.timestamp_candidates(doc).into_iter().map(|r| r.num).collect();
     for (r, o) in doc.scan_objects_subset(candidates) {
@@ -635,33 +690,9 @@ pub fn list_cached(doc: &Document, bytes: &[u8], trust: &TrustStore, cache: &Dig
         if !is_document_timestamp(&o) {
             continue;
         }
-        let mut info = SignatureInfo {
-            field: "DocumentTimestamp".to_string(),
-            signed: true,
-            page: None,
-            rect: None,
-            visible: false,
-            signer: None,
-            certificate: None,
-            chain: Vec::new(),
-            date: None,
-            signing_time: None,
-            reason: None,
-            location: None,
-            contact: None,
-            sub_filter: Some("ETSI.RFC3161".to_string()),
-            doc_timestamp: true,
-            certify: None,
-            revision: 0,
-            signed_len: 0,
-            digest: None,
-            algorithm: None,
-            timestamp: true,
-            timestamp_time: None,
-            status: Status::Unknown,
-            modification: Modification::None,
-            details: Vec::new(),
-        };
+        let mut info = fieldless_info("DocumentTimestamp", true);
+        info.sub_filter = Some("ETSI.RFC3161".to_string());
+        info.timestamp = true;
         validate_doc_timestamp(doc, bytes, d, &mut info, cache, trust);
         out.push(info);
     }
@@ -701,16 +732,83 @@ fn is_doc_timestamp(d: &Dict) -> bool {
 }
 
 /// The DocMDP permission level (`/P`, 1–3) of signature value `v`, or `None` for an approval
-/// signature.
+/// signature. Several `/DocMDP` references take the most restrictive level they name, and a
+/// `/P` that is missing or not a level reads as the most restrictive one: what can't be read
+/// fails closed rather than granting the benefit of level 2.
 fn docmdp(doc: &Document, v: &Dict) -> Option<u8> {
-    v.get(b"Reference")
-        .map(|r| doc.resolve(r))
-        .and_then(|r| r.as_array().cloned())
-        .into_iter()
-        .flatten()
-        .filter_map(|r| doc.resolve(&r).as_dict().cloned())
-        .find(|r| r.name(b"TransformMethod") == Some(b"DocMDP"))
-        .map(|r| r.get(b"TransformParams").map(|p| doc.resolve(p)).and_then(|p| p.as_dict().and_then(|p| p.int(b"P"))).unwrap_or(2).clamp(1, 3) as u8)
+    let mut level: Option<u8> = None;
+    let refs = v.get(b"Reference").map(|r| doc.resolve(r)).and_then(|r| r.as_array().cloned()).into_iter().flatten();
+    for r in refs {
+        let r = doc.resolve(&r);
+        let Some(r) = r.as_dict() else { continue };
+        if r.name(b"TransformMethod") != Some(b"DocMDP") {
+            continue;
+        }
+        let p = r.get(b"TransformParams").map(|p| doc.resolve(p)).and_then(|p| p.as_dict().and_then(|p| p.int(b"P")));
+        let p = match p {
+            Some(p) if (1..=3).contains(&p) => p as u8,
+            // Missing or malformed: the most restrictive level.
+            _ => 1,
+        };
+        level = Some(level.map_or(p, |l| l.min(p)));
+    }
+    level
+}
+
+/// What the signed revision's signature permitted: the `/P` of the signature whose byte range
+/// ends that revision (a later revision can rewrite `/P`, #1788). When it cannot be read back —
+/// the signature sits in no field and no `/Perms` of the signed revision, or the revision will
+/// not parse — the current, rewritable, revision does not speak for it: the most restrictive
+/// level stands.
+fn signed_certification(old: Option<&Document>, covered: usize) -> Option<u8> {
+    let Some(old) = old else { return Some(1) };
+    let signed_value =
+        signature_values(old).into_iter().find(|(_, v)| nums(old, v, b"ByteRange").is_some_and(|b| b.len() == 4 && b[2] + b[3] == covered as f64));
+    match signed_value {
+        Some((_, v)) => docmdp(old, &v),
+        None => Some(1),
+    }
+}
+
+/// A signature value dictionary: its `/Contents` is the signature over its `/ByteRange`. The
+/// `/Type` is optional here, as in [`is_signature_dict`].
+fn is_signature_value(d: &Dict) -> bool {
+    matches!(d.get(b"Contents"), Some(Object::String(_))) && matches!(d.get(b"ByteRange"), Some(Object::Array(_)))
+}
+
+/// The certification signature the catalog's `/Perms /DocMDP` names (ISO 32000-2 §12.8.2.2), as
+/// its reference and dictionary. Some writers point at the certification signature only from
+/// there, outside the `/Fields` tree; it is a signature of the document all the same. A `/Perms`
+/// or `/DocMDP` that names no signature value is no certification.
+fn perms_certification(doc: &Document) -> Option<(Option<ObjRef>, Dict)> {
+    let perms = doc.get(doc.root()?).as_dict()?.get(b"Perms")?.clone();
+    let target = doc.resolve(&perms).as_dict()?.get(b"DocMDP")?.clone();
+    let v = doc.resolve(&target).as_dict().cloned()?;
+    is_signature_value(&v).then_some((target.as_ref(), v))
+}
+
+/// Every signature value dictionary the document holds: the `/V` of each signature field and
+/// the certification signature the catalog's `/Perms /DocMDP` names, whichever holds it.
+fn signature_values(doc: &Document) -> Vec<(Option<ObjRef>, Dict)> {
+    let mut out: Vec<(Option<ObjRef>, Dict)> = Vec::new();
+    let mut seen: HashSet<ObjRef> = HashSet::new();
+    for f in sig_fields(doc) {
+        let Some(v) = f.dict.get(b"V") else { continue };
+        let Some(d) = doc.resolve(v).as_dict().cloned() else { continue };
+        if let Some(r) = v.as_ref()
+            && !seen.insert(r)
+        {
+            continue;
+        }
+        out.push((v.as_ref(), d));
+    }
+    if let Some((r, v)) = perms_certification(doc) {
+        let duplicate = r.map_or_else(|| out.iter().any(|(_, d)| *d == v), |r| !seen.insert(r));
+        if !duplicate {
+            out.push((r, v));
+        }
+    }
+    out
 }
 
 fn validate_into(doc: &Document, bytes: &[u8], trust: &TrustStore, v: &Dict, info: &mut SignatureInfo, cache: &DigestCache) {
@@ -912,17 +1010,8 @@ fn finish_validation(
     info.modification = if covered == bytes.len() || bytes[covered..].iter().all(|b| b.is_ascii_whitespace() || *b == 0) {
         Modification::None
     } else {
-        // The permissions are the signed revision's: a later one can rewrite `/P` (#1788). This
-        // signature is the one whose byte range ends that revision.
         let old = cache.revision(doc, bytes, covered);
-        if let Some(old) = &old
-            && let Some(v) = sig_fields(old)
-                .iter()
-                .filter_map(|f| f.signature(old))
-                .find(|v| nums(old, v, b"ByteRange").is_some_and(|b| b.len() == 4 && b[2] + b[3] == covered as f64))
-        {
-            info.certify = docmdp(old, &v);
-        }
+        info.certify = signed_certification(old.as_ref(), covered);
         classify_changes(doc, old, info.certify)
     };
     let mut problems = false;
@@ -1247,13 +1336,8 @@ pub(crate) fn signature_contents(doc: &Document) -> Vec<Vec<u8>> {
             out.push(der);
         }
     };
-    for f in sig_fields(doc) {
-        if let Some(v) = f.dict.get(b"V") {
-            let d = doc.resolve(v);
-            if let Some(dd) = d.as_dict() {
-                add(dd, v.as_ref());
-            }
-        }
+    for (r, d) in signature_values(doc) {
+        add(&d, r);
     }
     for (r, o) in doc.scan_objects() {
         let Some(d) = o.as_dict() else { continue };

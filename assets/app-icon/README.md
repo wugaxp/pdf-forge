@@ -19,10 +19,12 @@ a full-bleed colour field, no frame or roundel, the animal looking at the viewer
 icons use the full-bleed tile. macOS icons put it on Apple's grid (an 824 px body centred on a transparent
 1024 px canvas).
 
-**Provenance:** the project owner's original drawing, made in ArtCraft (2880 px, keyed to the palette), then
-vectorised with craftrules `assets/logo-options/_tools/vectorize_tile.py` (potrace; no filtering or
-warping). The source drawing is kept in craftrules at `assets/app-icons/pdfcraft/source.png`, not here.
-Licence: [LICENSE.txt](LICENSE.txt) (`MIT OR Apache-2.0`, like the repo).
+**Provenance:** the upstream project owner's original drawing, made in ArtCraft (the upstream
+team's design app; 2880 px, keyed to the palette), then vectorised with craftrules
+`assets/logo-options/_tools/vectorize_tile.py` (potrace; no filtering or warping). The source
+drawing is kept in the upstream team's internal craftrules at `assets/app-icons/pdfcraft/source.png`,
+not here. PDF Forge inherits these files unchanged from storytold/pdfcraft v0.14.0. Licence:
+[LICENSE.txt](LICENSE.txt) (`MIT OR Apache-2.0`, like the repo).
 
 ## Files
 

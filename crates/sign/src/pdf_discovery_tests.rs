@@ -397,3 +397,24 @@ fn dss_evidence_decodes_each_stream_once_within_its_caps() {
     assert!(ocsps.cut);
     assert!(DssEvidence::new(&doc, &dss, b"OCSPs").count() <= MAX_DSS_ENTRIES);
 }
+
+/// What the signed revision's signature permitted is read back from that revision; when it
+/// cannot be read back — the signature sits in no field and no `/Perms` there — the current,
+/// rewritable, revision does not speak for it, and the most restrictive level stands.
+#[test]
+fn the_signed_revisions_permissions_stand_and_what_cannot_be_read_fails_closed() {
+    let sig = "<< /Type /Sig /ByteRange [0 10 20 5] /Contents <00> /Reference [<< /Type /SigRef /TransformMethod /DocMDP /TransformParams << /Type /TransformParams /P 2 /V 1.2 >> >>] >>";
+    // The certification the signed revision names in `/Perms` is read back as it was written.
+    let mut doc = fixture(&[sig]);
+    doc.update_dict(doc.root().unwrap(), |c| {
+        let mut perms = Dict::new();
+        perms.set(b"DocMDP".to_vec(), Object::Ref(ObjRef::new(3, 0)));
+        c.set(b"Perms".to_vec(), Object::Dict(perms));
+    })
+    .unwrap();
+    assert_eq!(signed_certification(Some(&doc), 25), Some(2));
+    // Nothing in the signed revision names it: the claim of the current revision, which a later
+    // one may have rewritten, is not taken over the most restrictive level.
+    assert_eq!(signed_certification(Some(&fixture(&[sig])), 25), Some(1));
+    assert_eq!(signed_certification(None, 25), Some(1));
+}

@@ -132,6 +132,44 @@ fn view_history_select_all_and_find_options() {
     assert_eq!(h.state().views[0].find.as_ref().unwrap().matches.len(), 5);
 }
 
+/// Editing a page during a search drops that page's matches: they describe text that is gone.
+/// The page is searched again when its new text is read.
+#[test]
+fn editing_a_page_during_a_search_rescans_it() {
+    let mut h = harness();
+    h.state_mut().active = Some(0);
+    h.run_steps(2);
+    h.state_mut().views[0].open_find();
+    h.state_mut().views[0].find.as_mut().unwrap().query = "page".into();
+    h.state_mut().views[0].rerun_find();
+    // Find runs in the background: wait by a deadline, not a frame count.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && h.state().views[0].find.as_ref().unwrap().matches.len() < 15 {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(h.state().views[0].find.as_ref().unwrap().matches.len(), 15);
+    // A comment on page 2 changes that page while the search holds its matches.
+    let note = pdfcraft_engine::Shape::Note { at: [50.0, 50.0], icon: pdfcraft_engine::NoteIcon::Note };
+    let style = pdfcraft_engine::Style::default_for(&note);
+    let added = pdfcraft_engine::NewAnnotation { page: 2, shape: note, style, contents: "Note".into(), author: "Ada".into() };
+    h.state_mut().apply_edit(pdfcraft_engine::Edit::AddAnnotation(added));
+    {
+        let f = h.state().views[0].find.as_ref().unwrap();
+        assert!(f.matches.iter().all(|(p, _)| *p != 2), "the changed page's matches are gone");
+        assert!(!f.scanned.contains(&2), "and the page is searched again");
+        assert_eq!(f.matches.len(), 12);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && !h.state().views[0].find.as_ref().unwrap().scanned.contains(&2) {
+        h.run_steps(2);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let f = h.state().views[0].find.as_ref().unwrap();
+    assert!(f.scanned.contains(&2), "its new text is read and searched");
+    assert_eq!(f.matches.iter().filter(|(p, _)| *p == 2).count(), 3, "its matches are back");
+}
+
 #[test]
 fn find_shortcuts_advance_and_retreat_matches() {
     let mut h = harness();
@@ -840,7 +878,7 @@ fn tab_and_window_show_the_document_title_when_asked() {
     }
     h.run_steps(2);
     assert_eq!(h.state().window_title, "Quarterly report — PDF Forge");
-    h.get_by_label_contains("Quarterly report");
+    h.query_all_by_label_contains("Quarterly report").next().expect("the titled tab");
 }
 
 #[test]

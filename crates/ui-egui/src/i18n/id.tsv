@@ -137,7 +137,7 @@
 	Accessibility	Aksesibilitas
 	Help…	Bantuan…
 	Check for updates…	Periksa pembaruan…
-	About PdfCraft	Tentang PdfCraft
+	About PDF Forge	Tentang PDF Forge
 	Automatically	Otomatis
 	Never	Tidak pernah
 	Always	Selalu
@@ -603,7 +603,6 @@
 	From {file}	Dari {file}
 	From:	Dari:
 	Front side only	Hanya sisi depan
-	Get help, share feedback and follow development on Discord.	Dapatkan bantuan, berikan masukan, dan ikuti pengembangan di Discord.
 	Go to a page view	Ke tampilan halaman
 	Go to page {p}	Ke halaman {p}
 	Go to the page	Ke halaman tersebut
@@ -655,8 +654,6 @@
 	JavaScript Console	Konsol JavaScript
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript dimatikan (Preferensi > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, misalnya getField("total").value
-	Join our Discord	Gabung ke Discord kami
-	Join the ArtCraft community	Gabung ke komunitas ArtCraft
 	Justify	Ratakan kanan-kiri
 	Keep source fonts	Pertahankan font sumber
 	Keep tool selected	Pertahankan alat terpilih
@@ -847,7 +844,6 @@
 	Pages:	Halaman:
 	Pages: {k} of {n}	Halaman: {k} dari {n}
 	Paper:	Kertas:
-	Part of	Bagian dari
 	Password	Kata sandi
 	Password required	Kata sandi diperlukan
 	Password security	Keamanan kata sandi
@@ -859,8 +855,8 @@
 	Patterns (graphics objects)	Pola (objek grafis)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft tidak berhenti secara normal. Dokumen-dokumen ini memiliki perubahan yang disimpan otomatis:
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft bekerja secara luring. Tidak ada telemetri, tidak ada akun, dan tidak ada pemrosesan awan kecuali Anda menambahkan penyedia.
-	PdfCraft {c} is up to date.	PdfCraft {c} sudah terbaru.
-	PdfCraft {v} is available.	PdfCraft {v} tersedia.
+	PDF Forge {c} is up to date.	PDF Forge {c} sudah terbaru.
+	PDF Forge {v} is available.	PDF Forge {v} tersedia.
 	Percentage	Persentase
 	Permissions password	Kata sandi izin
 	Permitted actions after certifying	Tindakan yang diizinkan setelah disertifikasi
@@ -1250,7 +1246,7 @@
 	Visible Rectangle	Persegi Terlihat
 	Visual	Visual
 	Warnings	Peringatan
-	Welcome to PdfCraft	Selamat datang di PdfCraft
+	Welcome to PDF Forge	Selamat datang di PDF Forge
 	What word or phrase would you like to search for?	Kata atau frasa apa yang ingin Anda cari?
 	Whole words only	Hanya kata utuh
 	Width:	Lebar:
@@ -1327,7 +1323,6 @@
 	Archive documents	Arsipkan dokumen
 	Area	Luas
 	Arrow	Panah
-	ArtCraft website	Situs ArtCraft
 	Ask about this document	Tanyakan tentang dokumen ini
 	Attach a file	Lampirkan file
 	Attach file	Lampirkan file
@@ -1466,7 +1461,6 @@
 	Insert text	Sisipkan teks
 	JavaScript	JavaScript
 	JavaScript console…	Konsol JavaScript…
-	Join the ArtCraft Discord	Gabung ke Discord ArtCraft
 	Light gray	Abu-abu muda
 	Line	Garis
 	Link	Tautan
@@ -1497,8 +1491,7 @@
 	Page options	Opsi halaman
 	Page transitions	Transisi halaman
 	Paste pages	Tempel halaman
-	PdfCraft on GitHub	PdfCraft di GitHub
-	PdfCraft web page	Halaman web PdfCraft
+	PDF Forge on GitHub	PDF Forge di GitHub
 	Perimeter	Keliling
 	Pin folder to Home…	Sematkan folder ke Beranda…
 	PostScript / EPS	PostScript / EPS
@@ -2341,7 +2334,6 @@ comment menu	Edit	Edit
 	This document has no form fields.	Dokumen ini tidak memiliki kolom formulir.
 	This document has no layers.	Dokumen ini tidak memiliki lapisan.
 	This file is already as small as it can be made ({size}). No copy was saved.	File ini sudah sekecil mungkin ({size}). Tidak ada salinan yang disimpan.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Formulir ini juga berisi data XFA, yang belum dibaca PdfCraft. Anda dapat mengisi kolomnya, tetapi Acrobat mungkin menampilkan nilai XFA sebagai gantinya.
 	Thumbnails	Thumbnail
 	Timed responses	Respons berjadwal
 	Type Password	Ketik Kata Sandi

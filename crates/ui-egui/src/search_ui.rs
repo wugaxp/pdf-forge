@@ -1,4 +1,4 @@
-//! Edit ▸ Advanced Search (⇧⌘F): the search in a side panel that lists every match with its
+//! Edit ▸ Advanced Search (⇧⌘F): the search in a side panel that lists matches with their
 //! context, page by page; click a result to go to it. It shares the find bar's search.
 
 use egui::text::LayoutJob;
@@ -10,11 +10,16 @@ use crate::widgets;
 
 /// Glyphs of context shown on each side of a match.
 const CONTEXT: usize = 36;
+/// Rows the list draws. A search can keep far more matches than one list can show; the count
+/// above says how many there are and this says how many of them are listed.
+const LISTED: usize = 2000;
 
 pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, view: &mut DocView, pages: usize) {
     crate::widgets::begin_dialog(ui);
-    let searched = view.texts.len() + view.text_failed.len();
     let Some(find) = view.find.as_mut() else { return };
+    // How far the search has got, from what it has scanned: the text cache is bounded and gives
+    // pages up again while the search goes on.
+    let searched = find.scanned.len();
     find.in_panel = true;
     let l = ui.label(egui::RichText::new(tl!("What word or phrase would you like to search for?")).color(t.text_muted));
     let r = ui
@@ -51,15 +56,18 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, view: &mut DocView, pages: us
         } else {
             String::new()
         };
-        // English keeps its singular; Chinese has no plural.
-        let count = if n == 1 { crate::i18n::fmt(tl!("1 instance"), &[]) } else { crate::i18n::fmt(tl!("{n} instances"), &[("n", &n.to_string())]) };
-        format!("{count}{more}")
+        // English keeps its singular; Chinese has no plural. A search that kept fewer matches
+        // than it found counts what it keeps, with a "+" to say there are more.
+        let counted = if find.truncated { format!("{}+", n) } else { n.to_string() };
+        let count = if n == 1 { crate::i18n::fmt(tl!("1 instance"), &[]) } else { crate::i18n::fmt(tl!("{n} instances"), &[("n", &counted)]) };
+        let listed = if n > LISTED { crate::i18n::fmt(tl!(" (the first {r} are listed)"), &[("r", &LISTED.to_string())]) } else { String::new() };
+        format!("{count}{more}{listed}")
     };
     ui.label(egui::RichText::new(status).font(theme::semibold(12.5)));
     ui.add_space(4.0);
     let mut go = None;
     let mut last_page = None;
-    for (i, (p, range)) in find.matches.iter().enumerate().take(2000) {
+    for (i, (p, range)) in find.matches.iter().enumerate().take(LISTED) {
         if last_page != Some(*p) {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Page {label}"), &[("label", &(p + 1).to_string())])).small().color(t.text_faint));

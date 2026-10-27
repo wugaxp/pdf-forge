@@ -93,7 +93,6 @@
 	Side panels	Pannelli laterali
 	Enable Acrobat JavaScript	Abilita JavaScript di Acrobat
 	OK	OK
-	Join our Discord	Unisciti al nostro Discord
 	Close	Chiudi
 	Next / previous match	Risultato successivo/precedente
 	Copy selected text	Copia testo selezionato
@@ -162,10 +161,8 @@
 	Previous page	Pagina precedente
 	Current page — type a page number or label (such as iv) and press Enter	Pagina corrente: digita un numero o un'etichetta di pagina (ad esempio iv) e premi Invio
 	Zoom — type a percentage and press Enter	Zoom: digita una percentuale e premi Invio
-	Welcome to PdfCraft	Benvenuto in PdfCraft
+	Welcome to PDF Forge	Benvenuto in PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	Un banco di lavoro PDF open source: locale, riservato e programmabile.
-	Join the ArtCraft community	Unisciti alla community di ArtCraft
-	Get help, share feedback and follow development on Discord.	Chiedi aiuto, condividi commenti e segui lo sviluppo su Discord.
 	Recommended tools	Strumenti consigliati
 	Use now	Usa ora
 	Open file	Apri file
@@ -310,12 +307,9 @@
 	Split document…	Dividi documento…
 	Number pages…	Numera pagine…
 	Keyboard shortcuts	Scorciatoie da tastiera
-	Join the ArtCraft Discord	Unisciti al Discord di ArtCraft
-	PdfCraft web page	Pagina web di PdfCraft
-	PdfCraft on GitHub	PdfCraft su GitHub
-	ArtCraft website	Sito web di ArtCraft
+	PDF Forge on GitHub	PDF Forge su GitHub
 	Check for updates…	Verifica aggiornamenti…
-	About PdfCraft	Informazioni su PdfCraft
+	About PDF Forge	Informazioni su PDF Forge
 	Export a PDF	Esporta un PDF
 	Export to	Esporta in
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -805,9 +799,9 @@
 	Check for updates	Verifica aggiornamenti
 	No check has run yet.	Nessuna verifica eseguita finora.
 	Checking for a newer version…	Ricerca di una versione più recente…
-	PdfCraft {v} is available.	PdfCraft {v} è disponibile.
+	PDF Forge {v} is available.	PDF Forge {v} è disponibile.
 	You have version {c}. Download the new version from its release page.	Hai la versione {c}. Scarica la nuova versione dalla sua pagina di rilascio.
-	PdfCraft {c} is up to date.	PdfCraft {c} è aggiornato.
+	PDF Forge {c} is up to date.	PDF Forge {c} è aggiornato.
 	Couldn't check for updates: {e}	Impossibile verificare gli aggiornamenti: {e}
 	You have version {c}. All releases are listed at {page}.	Hai la versione {c}. Tutte le versioni sono elencate su {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	Chiede a GitHub qual è l'ultima versione. Nulla viene scaricato o installato automaticamente.
@@ -1445,7 +1439,6 @@
 	Discard	Scarta
 	Version {v}	Versione {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Un'applicazione PDF clean-room e open source scritta in Rust. MIT OR Apache-2.0.
-	Part of	Parte di
 	Summarize Options	Opzioni di riepilogo
 	Choose a layout:	Scegli un layout:
 	Comments only	Solo commenti
@@ -1842,7 +1835,6 @@
 	At least one signature has problems.	Almeno una firma presenta problemi.
 	This document is secured. Some changes are restricted by its security settings.	Questo documento è protetto. Alcune modifiche sono limitate dalle sue impostazioni di sicurezza.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Questo è un modulo XFA dinamico, che PdfCraft non è ancora in grado di visualizzare. Quella che vedi è la pagina segnaposto del file.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Questo modulo contiene anche dati XFA, che PdfCraft non legge ancora. Puoi compilarne i campi, ma Acrobat potrebbe mostrare invece i valori XFA.
 	This document contains {n} interactive form fields.	Campi modulo interattivi in questo documento: {n}.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Questo file era danneggiato ed è stato riparato. Il salvataggio mantiene la versione riparata.
 	Dismiss	Ignora

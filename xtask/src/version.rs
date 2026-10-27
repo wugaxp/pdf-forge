@@ -1,7 +1,9 @@
-//! `cargo xtask version [set X.Y.Z[-pre]]`: the workspace version, the single source of truth.
+//! `cargo xtask version [check | set X.Y.Z[-pre]]`: the workspace version, the single source of truth.
 //!
 //! The version lives in `[workspace.package] version` in the root `Cargo.toml`; every crate
 //! inherits it with `version.workspace = true`, and the packaging scripts read it from here.
+//! The `version` of each workspace path dependency in `[workspace.dependencies]` is pinned to it
+//! and must stay equal (`check`, a step of `cargo xtask ci` and a unit test).
 
 use std::path::Path;
 
@@ -46,6 +48,55 @@ pub fn replace(manifest: &str, new: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// The `version = "…"` pin of every path dependency in `[workspace.dependencies]`, in file order:
+/// (line number, dependency name, pinned version). These pins are the workspace's own crates and
+/// must agree with the workspace version, or `cargo update` refuses them.
+pub fn path_dep_pins(manifest: &str) -> Vec<(usize, String, String)> {
+    let mut pins = Vec::new();
+    let mut in_deps = false;
+    for (i, line) in manifest.lines().enumerate() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_deps = t == "[workspace.dependencies]";
+            continue;
+        }
+        if !in_deps || !line.contains("path = \"") {
+            continue;
+        }
+        let Some((name, rest)) = t.split_once(" = {") else { continue };
+        let Some((_, version)) = rest.split_once("version = \"") else { continue };
+        let Some((version, _)) = version.split_once('"') else { continue };
+        pins.push((i + 1, name.trim().to_string(), version.to_string()));
+    }
+    pins
+}
+
+/// The workspace version, once every workspace path-dependency pin agrees with it. The error
+/// names each disagreeing pin and its line, so the failing manifest edit is obvious.
+pub fn check(manifest: &str) -> Result<String, String> {
+    let version = read(manifest)?;
+    let disagreements: Vec<String> = path_dep_pins(manifest)
+        .into_iter()
+        .filter(|(_, _, pin)| *pin != version)
+        .map(|(line, name, pin)| format!("line {line}: {name} is pinned to {pin}"))
+        .collect();
+    if disagreements.is_empty() {
+        Ok(version)
+    } else {
+        Err(format!("workspace path-dependency pins disagree with version {version}: {}", disagreements.join("; ")))
+    }
+}
+
+/// `cargo xtask version check` and the `versions` step of `cargo xtask ci`: the root manifest's
+/// path-dependency pins agree with `[workspace.package] version`.
+pub fn verify(root: &Path) -> Result<(), String> {
+    let path = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let version = check(&text)?;
+    println!("version {version}: every workspace path-dependency pin agrees");
+    Ok(())
 }
 
 /// Semver without build metadata: `MAJOR.MINOR.PATCH` plus an optional `-pre.release` tag.
@@ -118,7 +169,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
             println!("version: {old} -> {new}");
             Ok(())
         }
-        _ => Err("usage: cargo xtask version [set X.Y.Z[-pre]]".into()),
+        ["check"] => verify(root),
+        _ => Err("usage: cargo xtask version [check | set X.Y.Z[-pre]]".into()),
     }
 }
 
@@ -176,6 +228,27 @@ mod tests {
     fn the_real_manifest_has_a_valid_version() {
         let text = std::fs::read_to_string(crate::gates::root().join("Cargo.toml")).unwrap();
         validate(&read(&text).unwrap()).unwrap();
+    }
+
+    /// The gate `cargo xtask ci` runs: every workspace path-dependency pin agrees with
+    /// `[workspace.package] version`, so `cargo update` accepts the workspace's own crates.
+    #[test]
+    fn the_workspace_crates_pins_agree_with_the_workspace_version() {
+        let text = std::fs::read_to_string(crate::gates::root().join("Cargo.toml")).unwrap();
+        let version = check(&text).unwrap();
+        validate(&version).unwrap();
+    }
+
+    #[test]
+    fn a_pin_that_disagrees_is_reported_with_its_line() {
+        let manifest = "[workspace.package]\nversion = \"0.1.0\"\n\n[workspace.dependencies]\n\
+                        own = { path = \"crates/own\", version = \"0.2.0\" }\n\
+                        dep = { path = \"crates/dep\", version = \"0.1.0\" }\n\
+                        reg = { version = \"0.1.0\" }\n";
+        assert_eq!(path_dep_pins(manifest).len(), 2, "registry dependencies have no pin");
+        let error = check(manifest).unwrap_err();
+        assert!(error.contains("own is pinned to 0.2.0"), "{error}");
+        assert!(!error.contains("dep"), "{error}");
     }
 
     /// The `rust-version = "1.NN"` line of a manifest, as the minor number.

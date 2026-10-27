@@ -4043,6 +4043,57 @@ fn signing_saving_trusting_and_commenting_afterwards() {
     assert!(!s.get(id).unwrap().dirty && s.get(id).unwrap().can_undo().map(str::to_owned) == before);
 }
 
+/// The most restrictive signed certification governs: a document can carry several, and the
+/// strictest one decides what may follow it.
+#[test]
+fn the_most_restrictive_signed_certification_governs() {
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+    // After the test certificate's start date (2026-10-02).
+    let mut s = Session::new().with_clock(|| 1_800_000_000);
+    let id = s.open("fixture.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    let opts = |certify| SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), certify, ..SignOptions::default() };
+    // Two certifications: the first permits annotations, the second nothing at all.
+    let signed = s.sign(id, &digital_id, opts(Some(3))).unwrap();
+    s.mark_signed(id, signed, None).unwrap();
+    let signed = s.sign(id, &digital_id, opts(Some(1))).unwrap();
+    s.mark_signed(id, signed, None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert_eq!(doc.signatures.iter().filter(|s| s.signed && s.certify.is_some()).count(), 2, "both certifications are listed");
+    // The strictest of the two stands, whichever order the list keeps them in.
+    for edit in [Edit::SetFieldValue { name: "qty".into(), value: FieldValue::Text("4".into()) }, Edit::RotatePages { pages: vec![0], degrees: 90 }] {
+        assert!(matches!(s.apply(id, edit), Err(EditError::Certification(1, _))), "the strictest certification decides");
+    }
+}
+
+/// Signatures are read again on every refresh, whatever the list held before: `check_certification`
+/// reads it, and a refresh that skipped an empty list would leave a signature invisible for the
+/// rest of the session.
+#[test]
+fn every_refresh_reads_the_signatures_again() {
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+    // After the test certificate's start date (2026-10-02).
+    let mut s = Session::new().with_clock(|| 1_800_000_000);
+    let id = s.open("fixture.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    let signed = s.sign(id, &digital_id, SignOptions { rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() }).unwrap();
+    s.mark_signed(id, signed, None).unwrap();
+    assert_eq!(s.get(id).unwrap().signatures.iter().filter(|s| s.signed).count(), 1);
+    // A metadata, a comment and a content edit each read the list again, however empty it stands.
+    for edit in [
+        Edit::SetInfo { key: "Title".into(), value: "Kept".into() },
+        rect_comment(0, [80.0, 80.0, 120.0, 120.0]),
+        Edit::AddText { page: 0, text: AddedText { rect: [20.0, 250.0, 180.0, 280.0], text: "Added".into(), ..AddedText::default() } },
+    ] {
+        s.doc_mut(id).unwrap().signatures = Arc::new(Vec::new());
+        s.apply(id, edit).unwrap();
+        let doc = s.get(id).unwrap();
+        let signed: Vec<_> = doc.signatures.iter().filter(|s| s.signed).collect();
+        assert_eq!(signed.len(), 1, "the refresh reads the signatures again");
+        assert_ne!(signed[0].modification, sign::Modification::None, "and what it validates against");
+    }
+}
+
 #[test]
 fn validated_signatures_without_layers_keep_their_appearance() {
     let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();

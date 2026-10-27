@@ -1305,7 +1305,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                         ui.horizontal(|ui| {
                             widgets::pdf_forge_mark(ui, 40.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("PDF Forge").font(theme::semibold(20.0)));
+                                widgets::pdf_forge_logo(ui, 28.0);
                                 ui.label(crate::i18n::fmt(tl!("Version {v}"), &[("v", &pdfcraft_engine::build_info::version())]));
                             });
                         });
@@ -1319,10 +1319,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                             .small(),
                         );
                         ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(tl!("Fork of")).color(t.text_muted));
-                            widgets::pdf_forge_logo(ui, 28.0);
-                        });
+                        // The fork is PDF Forge (its mark and wordmark above); PdfCraft is what it
+                        // was forked from, named in plain text.
+                        ui.label(egui::RichText::new(tl!("Fork of PdfCraft")).color(t.text_muted));
                         ui.add_space(6.0);
                         if let Some(cmd) = widgets::community_links(ui) {
                             link_command = Some(cmd);
@@ -1446,12 +1445,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
     }
     match redact_now {
         Some(Dialog::RedactPages) => app.redact_pages(),
-        Some(Dialog::RedactSearch) => {
-            let n = app.redact_search();
-            if app.redact_search_job.is_none() {
-                app.redact_search.found = Some(n);
-            }
-        }
+        Some(Dialog::RedactSearch) => app.redact_search(),
         Some(Dialog::RemoveHidden) => {
             let which: Vec<pdfcraft_engine::Hidden> = app.hidden_draft.found.iter().filter(|f| f.2 && f.1 > 0).map(|f| f.0).collect();
             let n: usize = app.hidden_draft.found.iter().filter(|f| f.2).map(|f| f.1).sum();

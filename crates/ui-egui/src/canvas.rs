@@ -58,6 +58,10 @@ const MAX_CACHED_PAGES: usize = 24;
 /// Text layers are glyph structs, far smaller than rasters; deliberately independent of
 /// `MAX_CACHED_PAGES` so raster tuning never silently retunes text memory.
 const MAX_CACHED_TEXT_PAGES: usize = 24;
+/// At most this many matches a search keeps. A broad query ("a", a common word) can match every
+/// glyph of a large document; the list is drawn from every frame and pins matched pages' text,
+/// so it is capped and the cap is reported ([`Find::truncated`]) instead of growing without end.
+pub const MAX_FIND_MATCHES: usize = 10_000;
 
 fn rgba_bytes(width: usize, height: usize) -> usize {
     width.saturating_mul(height).saturating_mul(4)
@@ -241,9 +245,17 @@ pub struct Find {
     pub whole_words: bool,
     /// Shown in the Search panel (Advanced Search) instead of the find bar.
     pub in_panel: bool,
-    /// Pages already read for this query. Their text may be evicted after scanning, and must
-    /// not be extracted again just because the find bar still holds the query.
+    /// Pages already searched for this query: read and matched, or known to have no readable
+    /// text. Their text may be let go after scanning ([`MAX_CACHED_TEXT_PAGES`]), and must not be
+    /// extracted again just because the find bar still holds the query. It is also how far the
+    /// search has got: the text cache itself is bounded and shrinks again while searching.
     pub scanned: HashSet<usize>,
+    /// A current match that should survive a document-wide text invalidation, until the search
+    /// has re-read enough pages to resolve it again.
+    pub restore: Option<(usize, Range<usize>)>,
+    /// The search found more than [`MAX_FIND_MATCHES`] matches: these are the first of them in
+    /// document order, and the counts say so.
+    pub truncated: bool,
 }
 
 /// A text selection on one page.
@@ -531,7 +543,7 @@ pub struct DocView {
     pub pending_edit: Option<Edit>,
     /// Edit text: the lines per page (with the document generation they were read at), and the
     /// line being edited.
-    pub(crate) edit_lines: HashMap<usize, (u64, Vec<pdfcraft_engine::TextBlock>)>,
+    pub(crate) edit_lines: HashMap<usize, (u64, std::sync::Arc<Vec<pdfcraft_engine::TextBlock>>)>,
     pub line_editor: Option<crate::edit_text_ui::LineEditor>,
     /// The paragraph editor whose edit was just queued. It opens again with its typing if the
     /// edit fails, as a refused form field does.
@@ -543,7 +555,7 @@ pub struct DocView {
     pub(crate) text_background: crate::edit_text_ui::TextBackground,
     pub(crate) move_background: crate::content_ui::MoveBackground,
     /// Edit text & images: the images per page (by document generation), and the selected one.
-    pub(crate) edit_images: HashMap<usize, (u64, Vec<pdfcraft_engine::PageImage>)>,
+    pub(crate) edit_images: HashMap<usize, (u64, std::sync::Arc<Vec<pdfcraft_engine::PageImage>>)>,
     pub(crate) objects: crate::object_ui::ObjectSelection,
     pub image_selection: Option<crate::edit_text_ui::ImageSelection>,
     /// Select tool: the picture clicked, to copy in its original format.
@@ -1039,8 +1051,15 @@ impl DocView {
         self.selection = None;
         self.all_text = false;
         if let Some(f) = self.find.as_mut() {
+            // Keep the user's place across a document-wide refresh when the same match is still
+            // present after the text is read again. A page-level change may already have saved
+            // the identity; do not overwrite it with the shifted index.
+            f.restore = f.restore.take().or_else(|| f.current.and_then(|c| f.matches.get(c).cloned()));
+            // Every page is read again, so every page is searched again for the query. The old
+            // index is kept until the replacement text resolves the remembered match.
             f.matches.clear();
-            f.current = None;
+            f.truncated = false;
+            f.scanned.clear();
         }
     }
 
@@ -1076,6 +1095,12 @@ impl DocView {
         if self.selection.is_some_and(|s| s.page == page) {
             self.selection = None;
         }
+        // Its text is read again, so the page is searched again for the query: its matches
+        // describe text that is gone.
+        if let Some(f) = self.find.as_mut() {
+            f.scanned.remove(&page);
+        }
+        self.drop_find_page(page);
     }
 
     /// Pages drawn last frame and their screen rectangles.
@@ -1228,7 +1253,9 @@ impl DocView {
         f.case_query = f.query.clone();
         f.matches.clear();
         f.current = None;
+        f.truncated = false;
         f.scanned.clear();
+        f.restore = None;
         if f.case_query.trim().is_empty() {
             return;
         }
@@ -1236,10 +1263,24 @@ impl DocView {
         pages.sort();
         for &p in &pages {
             if let Some(text) = self.texts.get(&p) {
-                f.matches.extend(text.find_opts(&f.case_query, f.case_sensitive, f.whole_words).into_iter().map(|r| (p, r)));
+                let mut found = text.find_opts(&f.case_query, f.case_sensitive, f.whole_words);
+                found.sort_by_key(|r| r.start);
+                for r in found {
+                    if f.matches.len() >= MAX_FIND_MATCHES {
+                        // The first matches in document order are the ones kept; the count
+                        // says there are more.
+                        f.truncated = true;
+                        break;
+                    }
+                    f.matches.push((p, r));
+                }
             }
         }
-        f.matches.sort_by_key(|(p, r)| (*p, r.start));
+        // Every page with text was searched, and every page known to have none counts as
+        // searched too: `scanned` is how far the search has got, and keeps the pages from being
+        // read again just because their text is let go later.
+        f.scanned.extend(self.texts.keys().copied());
+        f.scanned.extend(self.text_failed.iter().copied());
         if !f.matches.is_empty() {
             // First match at or after the page being viewed.
             let cur = self.current;
@@ -1251,27 +1292,65 @@ impl DocView {
     }
 
     fn refresh_find_page(&mut self, page: usize) {
+        let page_count = self.page_count;
         let (Some(f), Some(text)) = (self.find.as_mut(), self.texts.get(&page)) else { return };
+        // The page has been searched for this query (or read and found to have no text): it is
+        // progress, and must not be extracted again just because its text is let go later.
+        f.scanned.insert(page);
         if f.case_query.trim().is_empty() {
             return;
         }
-        let current_key = f.current.and_then(|c| f.matches.get(c).cloned());
+        let restore = f.restore.clone();
+        let current_key = restore.clone().or_else(|| f.current.and_then(|c| f.matches.get(c).cloned()));
         f.matches.retain(|(p, _)| *p != page);
         let mut page_matches: Vec<_> = text.find_opts(&f.case_query, f.case_sensitive, f.whole_words).into_iter().map(|r| (page, r)).collect();
         page_matches.sort_by_key(|(_, r)| r.start);
+        if page_matches.len() > MAX_FIND_MATCHES {
+            page_matches.truncate(MAX_FIND_MATCHES);
+            f.truncated = true;
+        }
         // `matches` is ordered by (page, start); a page's new matches belong in one place.
         let at = f.matches.partition_point(|(p, _)| *p < page);
         f.matches.splice(at..at, page_matches);
-        f.current = current_key.as_ref().and_then(|k| f.matches.iter().position(|m| m == k));
-        if f.current.is_none() && !f.matches.is_empty() {
+        if f.matches.len() > MAX_FIND_MATCHES {
+            // The first matches in document order stay; the count says there are more.
+            f.truncated = true;
+            f.matches.truncate(MAX_FIND_MATCHES);
+        }
+        let resolved = current_key.as_ref().and_then(|k| f.matches.iter().position(|m| m == k));
+        if restore.is_none() {
+            f.current = resolved;
+        } else if f.scanned.len() >= page_count {
+            // The whole document has been read again: settle the remembered match now.
+            f.restore = None;
+            f.current = resolved;
+        }
+        if f.restore.is_none() && f.current.is_none() && !f.matches.is_empty() {
             // First match at or after the page being viewed.
             let cur = self.current;
             let i = f.matches.iter().position(|(p, _)| *p >= cur).unwrap_or(0);
             f.current = Some(i);
             let (p, _) = f.matches[i];
-            if current_key.is_none() {
-                self.flash_match(p);
-            }
+            self.flash_match(p);
+        }
+    }
+
+    /// `page`'s text is gone or changed: its matches are dropped, and the page is searched again
+    /// when its new text is read (or counted as searched when it has none). `current` follows the
+    /// match it pointed at, as long as that one is still listed.
+    fn drop_find_page(&mut self, page: usize) {
+        let Some(f) = self.find.as_mut() else { return };
+        let previous_current = f.current;
+        let current_key = f.restore.clone().or_else(|| f.current.and_then(|c| f.matches.get(c).cloned()));
+        f.matches.retain(|(p, _)| *p != page);
+        if let Some(k) = current_key {
+            // Keep the user's index while the page's text is re-read. The identity is restored
+            // to its final position once the replacement text arrives.
+            f.restore = Some(k);
+            f.current = previous_current;
+        } else if !f.matches.is_empty() {
+            let cur = self.current;
+            f.current = Some(f.matches.iter().position(|(p, _)| *p >= cur).unwrap_or(0));
         }
     }
 
@@ -2129,23 +2208,16 @@ impl DocView {
             match r.text {
                 Some(t) => {
                     self.texts.insert(r.request.page, t);
-                    if let Some(f) = self.find.as_mut() {
-                        f.scanned.insert(r.request.page);
-                    }
                     self.refresh_find_page(r.request.page);
                 }
                 None => {
                     log::warn!("page {} text: {}", r.request.page + 1, r.error.unwrap_or_default());
                     self.text_failed.insert(r.request.page);
+                    // No text to search: the page counts as searched for the query.
                     if let Some(f) = self.find.as_mut() {
-                        let current_key = f.current.and_then(|c| f.matches.get(c).cloned());
-                        f.matches.retain(|(p, _)| *p != r.request.page);
-                        f.current = current_key.and_then(|k| f.matches.iter().position(|m| *m == k));
-                        if f.current.is_none() && !f.matches.is_empty() {
-                            let cur = self.current;
-                            f.current = Some(f.matches.iter().position(|(p, _)| *p >= cur).unwrap_or(0));
-                        }
+                        f.scanned.insert(r.request.page);
                     }
+                    self.drop_find_page(r.request.page);
                 }
             }
             return 0;
@@ -3566,23 +3638,27 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             let image_owns_pointer = tool == QuickTool::EditText && crate::edit_text_ui::image_owns_pointer(ui, &xf, &ptr, i, info, view);
             let on_objects =
                 !image_owns_pointer && tool == QuickTool::EditText && can_modify && crate::object_ui::page_input(ui, &resp, &xf, &ptr, i, doc, view);
+            // Read once per page and shared: this runs every frame the tool is out, and a page's
+            // whole text inventory is far too much to copy to paint it.
             let lines = if matches!(tool, QuickTool::AddText | QuickTool::EditText) && can_modify {
                 let generation = doc.edit_generation();
                 match view.edit_lines.get(&i) {
-                    Some((g, l)) if *g == generation => l.clone(),
+                    Some((g, l)) if *g == generation => Some(l.clone()),
                     _ => {
-                        let l = doc.text_blocks(i);
+                        let l = std::sync::Arc::new(doc.text_blocks(i));
                         view.edit_lines.insert(i, (generation, l.clone()));
-                        l
+                        Some(l)
                     }
                 }
             } else {
-                Vec::new()
+                None
             };
             let over_source = tool == QuickTool::AddText
                 && pointer.is_some_and(|p| {
                     !crate::content_ui::hits_added(&xf, info, i, &added, p)
-                        && lines.iter().any(|line| xf.user_rect(info, i, line.rect.map(|v| v as f32)).expand(2.0).contains(p))
+                        && lines
+                            .as_ref()
+                            .is_some_and(|lines| lines.iter().any(|line| xf.user_rect(info, i, line.rect.map(|v| v as f32)).expand(2.0).contains(p)))
                 });
             let source_blocked = over_source && view.content.hold_blocked();
             if over_source && resp.clicked() && !source_blocked {
@@ -3619,15 +3695,24 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 let images = match view.edit_images.get(&i) {
                     Some((g, l)) if *g == generation => l.clone(),
                     _ => {
-                        let l = doc.page_images(i);
+                        let l = std::sync::Arc::new(doc.page_images(i));
                         view.edit_images.insert(i, (generation, l.clone()));
                         l
                     }
                 };
                 // Editable text takes precedence over background/overlapping artwork. Both
                 // inventories are painted every frame, even when text owns the pointer.
-                let text_used =
-                    crate::edit_text_ui::page_input(ui, &resp, &xf, &ptr, i, doc, &lines, view, !others_own_pointer && !image_owns_pointer);
+                let text_used = crate::edit_text_ui::page_input(
+                    ui,
+                    &resp,
+                    &xf,
+                    &ptr,
+                    i,
+                    doc,
+                    lines.as_deref().map_or(&[], Vec::as_slice),
+                    view,
+                    !others_own_pointer && !image_owns_pointer,
+                );
                 let image_used = crate::edit_text_ui::image_input(
                     ui,
                     &resp,
@@ -3668,10 +3753,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             let to_screen = |g: [f32; 4]| xf.view_rect(g);
             if let Some(text) = view.texts.get(&i).cloned() {
                 if let Some(f) = &view.find {
-                    for (k, (mp, range)) in f.matches.iter().enumerate() {
-                        if *mp != i {
-                            continue;
-                        }
+                    // `matches` is in document order, so one page's slice is walked: painting a
+                    // page is proportional to that page's matches, whatever the document's total.
+                    let first = f.matches.partition_point(|(mp, _)| *mp < i);
+                    for (k, (_, range)) in f.matches[first..].iter().take_while(|(mp, _)| *mp == i).enumerate().map(|(j, m)| (first + j, m)) {
                         let current = f.current == Some(k);
                         for lr in text.line_rects(range.clone()) {
                             let fill = if current {
@@ -4800,7 +4885,9 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
     }
     let mut close = false;
     let mut step: Option<bool> = None;
-    let searched = view.texts.len() + view.text_failed.len();
+    // How far the search has got, from what it has scanned: the text cache is bounded and gives
+    // pages up again while the search goes on.
+    let searched = find.scanned.len();
     egui::Area::new(egui::Id::new("find-bar"))
         .order(egui::Order::Middle)
         .pivot(Align2::RIGHT_TOP)
@@ -4841,7 +4928,9 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
                                 tl!("No matches").to_string()
                             }
                         } else {
-                            let more = if searched < pages { "+" } else { "" };
+                            // "+" while the search is still going and where it kept fewer matches
+                            // than it found: the count is what is listed, not all there is.
+                            let more = if searched < pages || find.truncated { "+" } else { "" };
                             crate::i18n::fmt(
                                 tl!("{c} of {n}{more}"),
                                 &[
@@ -6195,6 +6284,91 @@ trailer << /Root 1 0 R >>
         assert!(!v.texts.contains_key(&99), "far pages go");
         assert_eq!(v.texts.len(), 2 + 1 + MAX_CACHED_TEXT_PAGES, "visible + matched + prefetch window");
         assert!(v.text_failed.contains(&0) && v.text_failed.contains(&99), "failures are bytes-free: never evict");
+    }
+
+    /// A page whose text is `words` words "page", as the text layer reads it.
+    fn word_page(words: usize) -> PageText {
+        let mut t = PageText::default();
+        for w in 0..words {
+            for (k, ch) in "page".chars().enumerate() {
+                t.glyphs.push(pdfcraft_render::TextGlyph {
+                    text: ch.to_string(),
+                    rect: [((w * 5 + k) as f32) * 10.0, 20.0, ((w * 5 + k) as f32) * 10.0 + 8.0, 30.0],
+                    quad: [[0.0, 0.0]; 4],
+                    direction: [1.0, 0.0],
+                });
+                t.line_of.push(0);
+                t.space_before.push(k == 0 && w > 0);
+            }
+        }
+        t
+    }
+
+    /// A broad query can match every word of a document. The list is kept bounded in document
+    /// order and says there are more, instead of growing without end (and pinning every matched
+    /// page's text for as long as the search runs).
+    #[test]
+    fn a_broad_search_keeps_the_first_matches_and_says_there_are_more() {
+        let mut v = view(2, PageLayout::Single, true);
+        v.texts.insert(0, word_page(12_000).into());
+        v.open_find();
+        v.find.as_mut().unwrap().query = "page".into();
+        v.rerun_find();
+        let f = v.find.as_ref().unwrap();
+        assert_eq!(f.matches.len(), MAX_FIND_MATCHES);
+        assert!(f.truncated, "the count says the search found more");
+        assert!(f.matches.iter().all(|(p, _)| *p == 0));
+    }
+
+    /// An edit during a search: the changed page's matches describe text that is gone. They go
+    /// with its text, the page is searched again when its new text is read, and what the search
+    /// has scanned follows. A change to the whole document starts the search over.
+    #[test]
+    fn editing_a_page_during_a_search_rescans_it() {
+        let mut v = view(3, PageLayout::Single, true);
+        for p in 0..3 {
+            v.texts.insert(p, word_page(2).into());
+        }
+        v.open_find();
+        v.find.as_mut().unwrap().query = "page".into();
+        v.rerun_find();
+        let f = v.find.as_ref().unwrap();
+        assert_eq!(f.matches.len(), 6);
+        assert_eq!(f.scanned, HashSet::from([0, 1, 2]));
+        v.page_changed(1);
+        let f = v.find.as_ref().unwrap();
+        assert!(f.matches.iter().all(|(p, _)| *p != 1), "the changed page's matches are gone");
+        assert!(!f.scanned.contains(&1), "and the page is searched again");
+        assert_eq!(f.matches.len(), 4);
+        // Its new text is read, searched, and counted as scanned again.
+        v.texts.insert(1, word_page(3).into());
+        v.refresh_find_page(1);
+        let f = v.find.as_ref().unwrap();
+        assert_eq!(f.matches.iter().filter(|(p, _)| *p == 1).count(), 3);
+        assert!(f.scanned.contains(&1));
+        v.invalidate_content();
+        let f = v.find.as_ref().unwrap();
+        assert!(f.matches.is_empty() && f.scanned.is_empty() && !f.truncated, "every page is searched again");
+    }
+
+    /// The search's progress is what it has scanned, not the text cache: the cache gives pages up
+    /// again while the search goes on, and progress must not go backwards because of it.
+    #[test]
+    fn search_progress_survives_text_eviction() {
+        let info = thumbnail_info(100);
+        let mut v = DocView::new(DocId(1), &info, ViewDefaults::default());
+        v.current = 50;
+        v.frame_visible = HashSet::from([50, 51]);
+        for p in 0..100 {
+            v.texts.insert(p, if p < 3 { word_page(1).into() } else { PageText::default().into() });
+        }
+        v.open_find();
+        v.find.as_mut().unwrap().query = "page".into();
+        v.rerun_find();
+        assert_eq!(v.find.as_ref().unwrap().scanned.len(), 100);
+        let _ = v.prepare_render_queue(&info, 1.0);
+        assert!(v.texts.len() < 100, "far pages' text goes");
+        assert_eq!(v.find.as_ref().unwrap().scanned.len(), 100, "progress does not go backwards");
     }
 
     /// A PDF of one line of text on each page, `lines[i]` on page `i`.

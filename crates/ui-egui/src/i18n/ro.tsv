@@ -145,7 +145,7 @@
 	Accessibility	Accesibilitate
 	Help…	Ajutor…
 	Check for updates…	Căutare actualizări…
-	About PdfCraft	Despre PdfCraft
+	About PDF Forge	Despre PDF Forge
 	Automatically	Automat
 	Never	Niciodată
 	Always	Întotdeauna
@@ -612,7 +612,6 @@
 	From {file}	Din {file}
 	From:	De la:
 	Front side only	Doar față
-	Get help, share feedback and follow development on Discord.	Primiți ajutor, trimiteți păreri și urmăriți dezvoltarea pe Discord.
 	Go to a page view	Salt la o vizualizare de pagină
 	Go to page {p}	Salt la pagina {p}
 	Go to the page	Salt la pagină
@@ -664,8 +663,6 @@
 	JavaScript Console	Consolă JavaScript
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript este dezactivat (Preferințe > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, de ex. getField("total").value
-	Join our Discord	Intrați pe Discord-ul nostru
-	Join the ArtCraft community	Alăturați-vă comunității ArtCraft
 	Justify	Aliniere stânga-dreapta
 	Keep source fonts	Păstrare fonturi sursă
 	Keep tool selected	Instrumentul rămâne selectat
@@ -856,7 +853,6 @@
 	Pages:	Pagini:
 	Pages: {k} of {n}	Pagini: {k} din {n}
 	Paper:	Hârtie:
-	Part of	Parte din
 	Password	Parolă
 	Password required	Este necesară parola
 	Password security	Securitate prin parolă
@@ -868,8 +864,8 @@
 	Patterns (graphics objects)	Modele (obiecte grafice)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft nu s-a închis normal. Aceste documente aveau modificări salvate automat:
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft funcționează offline. Fără telemetrie, fără cont și fără procesare în cloud, cu excepția cazului în care adăugați un furnizor.
-	PdfCraft {c} is up to date.	PdfCraft {c} este la zi.
-	PdfCraft {v} is available.	Este disponibil PdfCraft {v}.
+	PDF Forge {c} is up to date.	PDF Forge {c} este la zi.
+	PDF Forge {v} is available.	Este disponibil PDF Forge {v}.
 	Percentage	Procent
 	Permissions password	Parolă de permisiuni
 	Permitted actions after certifying	Acțiuni permise după certificare
@@ -1259,7 +1255,7 @@
 	Visible Rectangle	Dreptunghi vizibil
 	Visual	Vizual
 	Warnings	Avertismente
-	Welcome to PdfCraft	Bun venit în PdfCraft
+	Welcome to PDF Forge	Bun venit în PDF Forge
 	What word or phrase would you like to search for?	Ce cuvânt sau expresie doriți să căutați?
 	Whole words only	Doar cuvinte întregi
 	Width:	Lățime:
@@ -1336,7 +1332,6 @@
 	Archive documents	Arhivare documente
 	Area	Arie
 	Arrow	Săgeată
-	ArtCraft website	Site-ul ArtCraft
 	Ask about this document	Întrebări despre acest document
 	Attach a file	Atașare fișier
 	Attach file	Atașare fișier
@@ -1475,7 +1470,6 @@
 	Insert text	Inserare text
 	JavaScript	JavaScript
 	JavaScript console…	Consolă JavaScript…
-	Join the ArtCraft Discord	Intrați pe Discord-ul ArtCraft
 	Light gray	Gri deschis
 	Line	Linie
 	Link	Link
@@ -1506,8 +1500,7 @@
 	Page options	Opțiuni pagină
 	Page transitions	Tranziții pagini
 	Paste pages	Lipire pagini
-	PdfCraft on GitHub	PdfCraft pe GitHub
-	PdfCraft web page	Pagina web PdfCraft
+	PDF Forge on GitHub	PDF Forge pe GitHub
 	Perimeter	Perimetru
 	Pin folder to Home…	Fixare folder în Acasă…
 	PostScript / EPS	PostScript / EPS
@@ -2352,7 +2345,6 @@ comment menu	Edit	Editare
 	This document has no form fields.	Acest document nu are câmpuri de formular.
 	This document has no layers.	Acest document nu are straturi.
 	This file is already as small as it can be made ({size}). No copy was saved.	Acest fișier este deja cât de mic poate fi ({size}). Nu s-a salvat nicio copie.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Acest formular conține și date XFA, pe care PdfCraft nu le citește încă. Puteți completa câmpurile, dar Acrobat poate afișa în schimb valorile XFA.
 	Thumbnails	Miniaturi
 	Timed responses	Răspunsuri temporizate
 	Type Password	Introduceți parola

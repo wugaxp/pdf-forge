@@ -486,7 +486,7 @@ impl PdfCraftApp {
                 self.dialog = Some(Dialog::RedactPages);
             }
             "redact.search" => {
-                self.redact_search.found = None;
+                self.redact_search.outcome = None;
                 self.dialog = Some(Dialog::RedactSearch);
             }
             "redact.properties" => {

@@ -75,7 +75,6 @@
 	Side panels	साइड पैनल
 	Enable Acrobat JavaScript	Acrobat JavaScript सक्षम करें
 	OK	ठीक है
-	Join our Discord	हमारे Discord से जुड़ें
 	Close	बंद करें
 	Next / previous match	अगला / पिछला मिलान
 	Copy selected text	चयनित टेक्स्ट कॉपी करें
@@ -143,10 +142,8 @@
 	Next page	अगला पृष्ठ
 	Previous page	पिछला पृष्ठ
 	Current page — type a page number or label (such as iv) and press Enter	वर्तमान पृष्ठ — पृष्ठ संख्या या लेबल (जैसे iv) टाइप करें और Enter दबाएँ
-	Welcome to PdfCraft	PdfCraft में आपका स्वागत है
+	Welcome to PDF Forge	PDF Forge में आपका स्वागत है
 	An open-source PDF workbench — local, private, and scriptable.	एक ओपन-सोर्स पीडीएफ़ वर्कबेंच — स्थानीय, निजी और स्क्रिप्टेबल।
-	Join the ArtCraft community	ArtCraft समुदाय से जुड़ें
-	Get help, share feedback and follow development on Discord.	Discord पर सहायता प्राप्त करें, प्रतिक्रिया साझा करें और विकास पर नज़र रखें।
 	Recommended tools	अनुशंसित टूल
 	Use now	अभी उपयोग करें
 	Open file	फ़ाइल खोलें
@@ -291,12 +288,9 @@
 	Split document…	दस्तावेज़ विभाजित करें…
 	Number pages…	पृष्ठों पर नंबर लगाएँ…
 	Keyboard shortcuts	कीबोर्ड शॉर्टकट
-	Join the ArtCraft Discord	ArtCraft Discord से जुड़ें
-	PdfCraft web page	PdfCraft वेबपेज
-	PdfCraft on GitHub	GitHub पर PdfCraft
-	ArtCraft website	ArtCraft वेबसाइट
+	PDF Forge on GitHub	GitHub पर PDF Forge
 	Check for updates…	अपडेट की जाँच करें…
-	About PdfCraft	PdfCraft के बारे में
+	About PDF Forge	PDF Forge के बारे में
 	Export a PDF	पीडीएफ़ निर्यात करें
 	Export to	इसमें निर्यात करें
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -751,9 +745,9 @@
 	Check for updates	अपडेट के लिए जाँचें
 	No check has run yet.	अभी तक कोई जाँच नहीं चली है।
 	Checking for a newer version…	नए संस्करण की जाँच हो रही है…
-	PdfCraft {v} is available.	PdfCraft {v} उपलब्ध है।
+	PDF Forge {v} is available.	PDF Forge {v} उपलब्ध है।
 	You have version {c}. Download the new version from its release page.	आपके पास संस्करण {c} है। नया संस्करण इसके रिलीज़ पृष्ठ से डाउनलोड करें।
-	PdfCraft {c} is up to date.	PdfCraft {c} अद्यतन है।
+	PDF Forge {c} is up to date.	PDF Forge {c} अद्यतन है।
 	Couldn't check for updates: {e}	अपडेट की जाँच नहीं हो सकी: {e}
 	You have version {c}. All releases are listed at {page}.	आपके पास संस्करण {c} है। सभी रिलीज़ {page} पर सूचीबद्ध हैं।
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	GitHub से नवीनतम रिलीज़ की क्वेरी करता है। कुछ भी स्वतः डाउनलोड या इंस्टॉल नहीं होता।
@@ -1379,7 +1373,6 @@
 	Discard	छोड़ दें
 	Version {v}	संस्करण {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Rust में लिखा गया एक क्लीन-रूम, ओपन-सोर्स पीडीएफ़ ऐप्लिकेशन। MIT OR Apache-2.0।
-	Part of	इसका हिस्सा
 	Summarize Options	सारांश विकल्प
 	Choose a layout:	एक लेआउट चुनें:
 	Comments only	केवल टिप्पणियाँ
@@ -1757,7 +1750,6 @@
 	At least one signature has problems.	कम से कम एक हस्ताक्षर में समस्याएँ हैं।
 	This document is secured. Some changes are restricted by its security settings.	यह दस्तावेज़ सुरक्षित है। इसकी सुरक्षा सेटिंग्स कुछ बदलाव प्रतिबंधित करती हैं।
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	यह एक डायनामिक XFA फ़ॉर्म है, जिसे PdfCraft अभी दिखा नहीं सकता। आप जो देख रहे हैं वह फ़ाइल का प्लेसहोल्डर पृष्ठ है।
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	इस फ़ॉर्म में XFA डेटा भी है, जिसे PdfCraft अभी नहीं पढ़ता। आप इसके फ़ील्ड भर सकते हैं, लेकिन Acrobat इसके बजाय XFA मान दिखा सकता है।
 	This document contains {n} interactive form fields.	इस दस्तावेज़ में {n} इंटरैक्टिव फ़ॉर्म फ़ील्ड हैं।
 	This file was damaged and has been repaired. Saving keeps the repaired version.	यह फ़ाइल क्षतिग्रस्त थी और उसे मरम्मत कर दिया गया है। सहेजने पर मरम्मत किया हुआ संस्करण ही रहेगा।
 	Dismiss	छिपाएँ

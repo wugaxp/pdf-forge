@@ -144,7 +144,7 @@ theme	Appearance	Giao diện
 	Accessibility	Trợ năng
 	Help…	Trợ giúp…
 	Check for updates…	Kiểm tra bản cập nhật…
-	About PdfCraft	Giới thiệu PdfCraft
+	About PDF Forge	Giới thiệu PDF Forge
 	Automatically	Tự động
 	Never	Không bao giờ
 	Always	Luôn luôn
@@ -615,7 +615,6 @@ theme	Appearance	Giao diện
 	From {file}	Từ {file}
 	From:	Từ:
 	Front side only	Chỉ mặt trước
-	Get help, share feedback and follow development on Discord.	Nhận trợ giúp, chia sẻ phản hồi và theo dõi quá trình phát triển trên Discord.
 	Go to a page view	Đi tới một chế độ xem trang
 	Go to page {p}	Đi tới trang {p}
 	Go to the page	Đi tới trang
@@ -669,8 +668,6 @@ theme	Appearance	Giao diện
 	JavaScript Console	Bảng điều khiển JavaScript
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript đã bị tắt (Tùy chọn > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, ví dụ getField("total").value
-	Join our Discord	Tham gia Discord của chúng tôi
-	Join the ArtCraft community	Tham gia cộng đồng ArtCraft
 	Justify	Căn đều
 	Keep source fonts	Giữ phông chữ nguồn
 	Keep tool selected	Giữ công cụ được chọn
@@ -892,7 +889,6 @@ theme	Appearance	Giao diện
 	Pages:	Trang:
 	Pages: {k} of {n}	Trang: {k} trên {n}
 	Paper:	Giấy:
-	Part of	Một phần của
 	Password	Mật khẩu
 	Password required	Yêu cầu mật khẩu
 	Password security	Bảo mật bằng mật khẩu
@@ -904,8 +900,8 @@ theme	Appearance	Giao diện
 	Patterns (graphics objects)	Họa tiết (đối tượng đồ họa)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft không đóng bình thường. Các tài liệu này có thay đổi đã được tự động lưu:
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft hoạt động ngoại tuyến. Không thu thập dữ liệu sử dụng, không cần tài khoản, và không xử lý đám mây trừ khi bạn thêm nhà cung cấp.
-	PdfCraft {c} is up to date.	PdfCraft {c} đã là bản mới nhất.
-	PdfCraft {v} is available.	PdfCraft {v} đã có sẵn.
+	PDF Forge {c} is up to date.	PDF Forge {c} đã là bản mới nhất.
+	PDF Forge {v} is available.	PDF Forge {v} đã có sẵn.
 	Percentage	Phần trăm
 	Permissions password	Mật khẩu quyền hạn
 	Permitted actions after certifying	Các hành động được phép sau khi chứng nhận
@@ -1299,7 +1295,7 @@ theme	Appearance	Giao diện
 	Visible Rectangle	Hình chữ nhật hiển thị
 	Visual	Trực quan
 	Warnings	Cảnh báo
-	Welcome to PdfCraft	Chào mừng đến với PdfCraft
+	Welcome to PDF Forge	Chào mừng đến với PDF Forge
 	What word or phrase would you like to search for?	Bạn muốn tìm từ hoặc cụm từ nào?
 	Whole words only	Chỉ khớp toàn bộ từ
 	Width:	Chiều rộng:
@@ -1376,7 +1372,6 @@ theme	Appearance	Giao diện
 	Archive documents	Lưu trữ tài liệu
 	Area	Diện tích
 	Arrow	Mũi tên
-	ArtCraft website	Trang web ArtCraft
 	Ask about this document	Hỏi về tài liệu này
 	Attach a file	Đính kèm một tệp
 	Attach file	Đính kèm tệp
@@ -1515,7 +1510,6 @@ theme	Appearance	Giao diện
 	Insert text	Chèn văn bản
 	JavaScript	JavaScript
 	JavaScript console…	Bảng điều khiển JavaScript…
-	Join the ArtCraft Discord	Tham gia Discord của ArtCraft
 	Light gray	Xám nhạt
 	Line	Đường thẳng
 	Link	Liên kết
@@ -1546,8 +1540,7 @@ theme	Appearance	Giao diện
 	Page options	Tùy chọn trang
 	Page transitions	Hiệu ứng chuyển trang
 	Paste pages	Dán trang
-	PdfCraft on GitHub	PdfCraft trên GitHub
-	PdfCraft web page	Trang web PdfCraft
+	PDF Forge on GitHub	PDF Forge trên GitHub
 	Perimeter	Chu vi
 	Pin folder to Home…	Ghim thư mục vào Trang chủ…
 	PostScript / EPS	PostScript / EPS
@@ -2398,7 +2391,6 @@ comment menu	Edit	Sửa
 	This document has no form fields.	Tài liệu này không có trường biểu mẫu.
 	This document has no layers.	Tài liệu này không có lớp.
 	This file is already as small as it can be made ({size}). No copy was saved.	Tệp này đã nhỏ hết mức có thể ({size}). Không có bản sao nào được lưu.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Biểu mẫu này còn chứa dữ liệu XFA mà PdfCraft chưa đọc được. Bạn có thể điền các trường của nó, nhưng Acrobat có thể hiển thị giá trị XFA thay thế.
 	Thumbnails	Hình thu nhỏ
 	Timed responses	Phản hồi có giới hạn thời gian
 	Type Password	Nhập mật khẩu

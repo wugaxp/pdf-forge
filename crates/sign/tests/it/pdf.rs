@@ -351,6 +351,69 @@ fn later_changes_are_classified_under_the_signature_permissions() {
     assert_eq!((s.certify, s.status), (Some(1), Status::Invalid), "{:?}", s.modification);
 }
 
+/// A `/FT /Sig` field without a `/T` (ISO 32000-2 Table 226: `/T` is optional) is a signature
+/// field all the same: an appended revision that strips the name does not erase the signature,
+/// and the certification it carries is still read from the signed revision.
+#[test]
+fn a_signature_field_without_a_name_is_still_listed() {
+    let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();
+    let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { field: Some("Approval".into()), certify: Some(2), ..opts() }).unwrap();
+    let named = signatures(&open(&signed), &signed, &TrustStore::default()).into_iter().find(|s| s.signed).unwrap();
+    assert_eq!((named.field.as_str(), named.certify), ("Approval", Some(2)));
+    let stripped = edit_after(&signed, |doc| {
+        doc.update_dict(ObjRef::new(6, 0), |d| {
+            d.remove(b"T");
+        })
+        .unwrap();
+    });
+    let sigs = signatures(&open(&stripped), &stripped, &TrustStore::default());
+    let signed_sigs: Vec<_> = sigs.iter().filter(|s| s.signed).collect();
+    assert_eq!(signed_sigs.len(), 1, "the certification is listed once, nameless field and /Perms alike: {sigs:?}");
+    assert_eq!((signed_sigs[0].field.as_str(), signed_sigs[0].certify), ("", Some(2)), "{sigs:?}");
+}
+
+/// A certification signature only the catalog's `/Perms /DocMDP` names — no field holds it any
+/// more — is listed and read as a certification all the same (ISO 32000-2 §12.8.2.2).
+#[test]
+fn a_certification_signature_is_found_in_perms_without_a_field() {
+    let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();
+    let signed = pdfcraft_sign::sign(&open(&fixture()), &id, &SignOptions { certify: Some(2), ..opts() }).unwrap();
+    let dropped = edit_after(&signed, |doc| {
+        let mut af = pdfcraft_cos::Dict::new();
+        af.set(b"SigFlags".to_vec(), Object::Int(3));
+        doc.update_dict(doc.root().unwrap(), |c| c.set(b"AcroForm".to_vec(), Object::Dict(af))).unwrap();
+    });
+    let sigs = signatures(&open(&dropped), &dropped, &TrustStore::default());
+    let c = sigs.iter().find(|s| s.field == "Certification").expect("the certification is listed");
+    assert!(c.signed && c.certify == Some(2), "{sigs:?}");
+}
+
+/// A `/DocMDP` transform whose `/P` cannot be read fails closed to the most restrictive level,
+/// and several transforms take the most restrictive level they name.
+#[test]
+fn docmdp_permissions_fail_closed_to_the_most_restrictive_level() {
+    let entry = |n: i64| format!("<< /Type /SigRef /TransformMethod /DocMDP /TransformParams << /Type /TransformParams /P {n} /V 1.2 >> >>");
+    let check = |refs: &str, want: Option<u8>| {
+        let value = format!("<< /Type /Sig /ByteRange [0 10 20 5] /Contents <00> /Reference {refs} >>");
+        let bytes =
+            write_pdf(&[b"<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP 3 0 R >> >>", b"<< /Type /Pages /Kids [] /Count 0 >>", value.as_bytes()]);
+        let doc = open(&bytes);
+        let listed = signatures(&doc, &bytes, &TrustStore::default());
+        let c = listed.iter().find(|s| s.signed).expect("the certification is listed");
+        assert_eq!(c.certify, want, "{refs}: {listed:?}");
+    };
+    check(&format!("[{}]", entry(1)), Some(1));
+    check(&format!("[{}]", entry(3)), Some(3));
+    // What can't be read fails closed: no `/P` at all, or not a level.
+    check("[<< /Type /SigRef /TransformMethod /DocMDP /TransformParams << /Type /TransformParams /V 1.2 >> >>]", Some(1));
+    check(&format!("[{}]", entry(9)), Some(1));
+    // Several transforms take the most restrictive level they name.
+    check(&format!("[{} {}]", entry(3), entry(2)), Some(2));
+    // No `/DocMDP` transform: an approval signature, which permits everything the document's
+    // own permissions do.
+    check("[<< /Type /SigRef /TransformMethod /DigestMethod >>]", None);
+}
+
 #[test]
 fn invisible_signatures_and_refusals() {
     let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();

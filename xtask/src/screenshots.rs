@@ -1,44 +1,41 @@
-//! `cargo xtask screenshots [name…]`: regenerate the README screenshots in `docs/images/`.
+//! `cargo xtask screenshots [name…]`: regenerate the reference screenshots in `docs/images/`.
 //!
 //! Every image is a headless render of the real app (`examples/shot.rs`) showing the showcase
 //! PDF. That PDF is built only from the OFL fonts and generated artwork in ATTRIBUTION.toml, so
 //! the screenshots are contributor-original and policy-compliant (AGENTS.md §1). Afterwards the
-//! `docs/images/*.png` entries in ATTRIBUTION.toml are rewritten with fresh hashes, and
-//! ATTRIBUTION.md is regenerated.
+//! `docs/images/*.png` entries in ATTRIBUTION.toml are rewritten with fresh hashes for the shots
+//! this run rendered, and ATTRIBUTION.md is regenerated. Entries of images this run did not
+//! render keep their recorded provenance: the images inherited from upstream stay attributed to
+//! upstream until a run here replaces them.
 //!
 //! The document is opened by a *relative* path so no local directory names (user names) can
 //! appear in a screenshot.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// (file stem, title, what it shows, shot arguments after the PDF path).
-pub const SCENES: &[(&str, &str, &str, &[&str])] = &[
-    ("pdfcraft-viewer", "Viewer with comments", "README hero", &["--panel", "comments", "--zoom", "72"]),
-    ("pdfcraft-dark", "Dark theme", "README: themes", &["--theme", "dark", "--panel", "comments", "--page", "11", "--zoom", "80", "--notice", "off"]),
-    ("pdfcraft-organize", "Organize pages", "README: organize", &["--organize", "on", "--panel", "none", "--select", "5,6,7"]),
-    ("pdfcraft-find", "Find text", "README: search", &["--find", "type", "--page", "4", "--zoom", "90", "--panel", "none", "--notice", "off"]),
-    ("pdfcraft-bookmarks", "Bookmarks", "README: navigation", &["--panel", "bookmarks", "--page", "7", "--zoom", "75", "--notice", "off"]),
-    ("pdfcraft-forms", "Interactive form", "README: forms", &["--page", "13", "--fields", "on", "--zoom", "80", "--panel", "fields"]),
-    ("pdfcraft-layers", "Layers", "README: layers", &["--panel", "layers", "--page", "12", "--zoom", "75", "--notice", "off"]),
-    (
-        "pdfcraft-scripts",
-        "Scripts of the world",
-        "README: rendering",
-        &["--page", "7", "--zoom", "125", "--left", "closed", "--panel", "none", "--notice", "off"],
-    ),
-    ("pdfcraft-properties", "Document properties", "README: metadata", &["--dialog", "properties", "--notice", "off"]),
-    ("pdfcraft-palette", "Command palette", "README: tools", &["--palette", "page", "--notice", "off"]),
-    ("pdfcraft-split", "Split dialog", "README: split", &["--organize", "on", "--panel", "none", "--dialog", "split", "--notice", "off"]),
-    ("pdfcraft-tools", "All tools", "README: tool catalogue", &["--tools", "expanded", "--home", "on"]),
-    (
-        "pdfcraft-twoup",
-        "Two-up reading",
-        "README: layouts",
-        &["--layout", "two-up", "--mode", "read", "--page", "4", "--theme", "dark", "--notice", "off"],
-    ),
+/// What the screenshots in `docs/images/` are for. The fork's README shows none of them; they are
+/// kept as reference renders of the interface.
+const USAGE: &str = "Reference screenshot kept in docs/images";
+
+/// (file stem, title, shot arguments after the PDF path).
+pub const SCENES: &[(&str, &str, &[&str])] = &[
+    ("pdfcraft-viewer", "Viewer with comments", &["--panel", "comments", "--zoom", "72"]),
+    ("pdfcraft-dark", "Dark theme", &["--theme", "dark", "--panel", "comments", "--page", "11", "--zoom", "80", "--notice", "off"]),
+    ("pdfcraft-organize", "Organize pages", &["--organize", "on", "--panel", "none", "--select", "5,6,7"]),
+    ("pdfcraft-find", "Find text", &["--find", "type", "--page", "4", "--zoom", "90", "--panel", "none", "--notice", "off"]),
+    ("pdfcraft-bookmarks", "Bookmarks", &["--panel", "bookmarks", "--page", "7", "--zoom", "75", "--notice", "off"]),
+    ("pdfcraft-forms", "Interactive form", &["--page", "13", "--fields", "on", "--zoom", "80", "--panel", "fields"]),
+    ("pdfcraft-layers", "Layers", &["--panel", "layers", "--page", "12", "--zoom", "75", "--notice", "off"]),
+    ("pdfcraft-scripts", "Scripts of the world", &["--page", "7", "--zoom", "125", "--left", "closed", "--panel", "none", "--notice", "off"]),
+    ("pdfcraft-properties", "Document properties", &["--dialog", "properties", "--notice", "off"]),
+    ("pdfcraft-palette", "Command palette", &["--palette", "page", "--notice", "off"]),
+    ("pdfcraft-split", "Split dialog", &["--organize", "on", "--panel", "none", "--dialog", "split", "--notice", "off"]),
+    ("pdfcraft-tools", "All tools", &["--tools", "expanded", "--home", "on"]),
+    ("pdfcraft-twoup", "Two-up reading", &["--layout", "two-up", "--mode", "read", "--page", "4", "--theme", "dark", "--notice", "off"]),
 ];
 
 const PDF: &str = "dist/demo/pdfcraft-showcase.pdf";
@@ -60,7 +57,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let target = std::env::var("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| root.join("target"));
     let shot = target.join("release/examples").join(if cfg!(windows) { "shot.exe" } else { "shot" });
     std::fs::create_dir_all(root.join("docs/images"))?;
-    for (name, _, _, scene) in SCENES {
+    let mut rendered = BTreeSet::new();
+    for (name, _, scene) in SCENES {
         if !args.is_empty() && !args.iter().any(|a| a == name) {
             continue;
         }
@@ -78,20 +76,25 @@ pub fn run(args: &[String]) -> Result<()> {
         if !status.success() {
             bail!("screenshot {name} failed");
         }
+        rendered.insert((*name).to_string());
     }
-    update_attribution(&root)?;
+    update_attribution(&root, &rendered)?;
     crate::assets::run(&["--write".to_string()])
 }
 
-/// Replace the `docs/images/` entries of ATTRIBUTION.toml with one per screenshot on disk.
-fn update_attribution(root: &Path) -> Result<()> {
+/// Replace the `docs/images/` entries of ATTRIBUTION.toml with one per screenshot this run
+/// rendered. Entries of images left untouched keep their text, so screenshots that came from
+/// upstream stay attributed to upstream instead of claiming this repository.
+fn update_attribution(root: &Path, rendered: &BTreeSet<String>) -> Result<()> {
     let path = root.join("ATTRIBUTION.toml");
     let text = std::fs::read_to_string(&path)?;
-    // Split into the header and `[[…]]` blocks; drop existing screenshot blocks.
+    // Split into the header and `[[…]]` blocks; drop the blocks this run re-renders.
     let mut parts: Vec<String> = Vec::new();
     for (i, block) in text.split("\n[[").enumerate() {
         let block = if i == 0 { block.to_string() } else { format!("[[{block}") };
-        if block.starts_with("[[asset]]") && block.contains("path = \"docs/images/") {
+        let rerendered =
+            block.starts_with("[[asset]]") && rendered.iter().any(|stem| block.contains(format!("path = \"docs/images/{stem}.png\"").as_str()));
+        if rerendered {
             continue;
         }
         parts.push(block);
@@ -100,23 +103,20 @@ fn update_attribution(root: &Path) -> Result<()> {
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    let mut images: Vec<_> = std::fs::read_dir(root.join("docs/images"))?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    images.sort();
-    for file in images.iter().filter(|f| f.ends_with(".png")) {
-        let stem = file.trim_end_matches(".png");
-        let scene = SCENES.iter().find(|(n, ..)| *n == stem);
-        let (title, usage) = scene.map(|(_, t, u, _)| (*t, *u)).unwrap_or(("PdfCraft screenshot", "README"));
-        // The home screen shows the ArtCraft mark: say so (it is a Storyteller trademark, not open
-        // source; AGENTS.md §1.2), so the screenshot's licence is not read as covering it.
+    for stem in rendered {
+        let scene = SCENES.iter().find(|(n, ..)| *n == stem.as_str());
+        let title = scene.map(|(_, t, _)| *t).unwrap_or("PdfCraft screenshot");
+        // The home screen shows the fork's PDF Forge mark (docs/brand/pdf-forge-mark.png), which
+        // this repository's licence covers; say so next to the rest of what the shot shows.
         let shows_home = scene.is_some_and(|(.., args)| args.windows(2).any(|w| w[0] == "--home" && w[1] == "on"));
         let contents = if shows_home {
-            "Shows PdfCraft UI, Lucide icons, the showcase PDF built from the [[fetched]] OFL fonts, and the ArtCraft mark (Storyteller trademark from docs/brand/, not covered by this licence)"
+            "Shows PdfCraft UI, Lucide icons, the showcase PDF built from the [[fetched]] OFL fonts, and the PDF Forge mark (docs/brand/pdf-forge-mark.png)"
         } else {
             "Shows only PdfCraft UI, Lucide icons and the showcase PDF built from the [[fetched]] OFL fonts"
         };
-        let bytes = std::fs::read(root.join("docs/images").join(file))?;
+        let bytes = std::fs::read(root.join("docs/images").join(format!("{stem}.png")))?;
         out.push_str(&format!(
-            "\n[[asset]]\npath = \"docs/images/{file}\"\ntitle = \"PdfCraft screenshot: {title}\"\nauthor = \"PdfCraft contributors (generated by `cargo xtask screenshots`)\"\nsource = \"this repository\"\nlicence = \"MIT OR Apache-2.0\"\nlicence_file = \"LICENSE-MIT\"\nkind = \"image\"\nusage = \"{usage}. {contents}\"\nsha256 = \"{}\"\n",
+            "\n[[asset]]\npath = \"docs/images/{stem}.png\"\ntitle = \"PdfCraft screenshot: {title}\"\nauthor = \"PdfCraft contributors (generated by `cargo xtask screenshots`)\"\nsource = \"this repository\"\nlicence = \"MIT OR Apache-2.0\"\nlicence_file = \"LICENSE-MIT\"\nkind = \"image\"\nusage = \"{USAGE}. {contents}\"\nsha256 = \"{}\"\n",
             crate::assets::sha256_hex(&bytes)
         ));
     }

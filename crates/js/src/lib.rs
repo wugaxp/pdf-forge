@@ -1518,12 +1518,35 @@ const SCRIPT_STACK: usize = 128 << 20;
 /// A form script that has not returned after this long is abandoned and reported. Boa cannot be
 /// cancelled safely, so its loop/recursion limits still stop the worker shortly afterwards.
 const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// A timed-out worker cannot be killed. Cap how many may be abandoned at once so a document
-/// that runs several runaway scripts cannot keep spawning 128 MiB stacks.
+/// A timed-out worker cannot be killed. Cap how many script workers may be running at once, so a
+/// document that runs several runaway scripts cannot keep spawning 128 MiB stacks: every worker
+/// holds one slot from before it is spawned until it is done, an abandoned one longest of all.
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+const MAX_SCRIPT_WORKERS: usize = 4;
+#[cfg(all(not(target_arch = "wasm32"), test))]
+const MAX_SCRIPT_WORKERS: usize = 64;
 #[cfg(not(target_arch = "wasm32"))]
-const MAX_ABANDONED_SCRIPTS: usize = 4;
+static SCRIPT_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The slot one script worker holds in [`SCRIPT_WORKERS`], given back however the worker ends —
+/// a panic in the engine included.
 #[cfg(not(target_arch = "wasm32"))]
-static ABANDONED_SCRIPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct ScriptSlot;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ScriptSlot {
+    fn drop(&mut self) {
+        SCRIPT_WORKERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Take one of `cap` slots on `taken` for a script worker, in one atomic step: a check made
+/// before the taking could be raced past by other callers, and the cap is what keeps several
+/// runaway scripts from spawning a 128 MiB stack each without end. `false` when all are held.
+#[cfg(not(target_arch = "wasm32"))]
+fn take_script_slot(taken: &std::sync::atomic::AtomicUsize, cap: usize) -> bool {
+    taken.try_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |n| (n < cap).then_some(n + 1)).is_ok()
+}
 
 /// Why `source` is refused, if it is: too long, or nested deeper than any form needs. Strings
 /// and comments are skipped; brackets in regular expressions and templates count, which only
@@ -1627,8 +1650,10 @@ pub fn run_shared(script: &str, event: &Event, doc: &DocInfo, fields: Arc<Vec<Fi
     {
         // A script that runs away must not block the editor forever. The worker is abandoned on
         // timeout (Boa cannot be cancelled safely), but its loop/recursion limits still stop it;
-        // the caller gets an error at once instead of a frozen UI.
-        if ABANDONED_SCRIPTS.load(std::sync::atomic::Ordering::Acquire) >= MAX_ABANDONED_SCRIPTS {
+        // the caller gets an error at once instead of a frozen UI. Its slot is taken here in one
+        // atomic step and held until the worker is done, so an abandoned one keeps its 128 MiB
+        // stack counted.
+        if !take_script_slot(&SCRIPT_WORKERS, MAX_SCRIPT_WORKERS) {
             return failed("too many scripts are still running; close the document and try again".into());
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1637,24 +1662,22 @@ pub fn run_shared(script: &str, event: &Event, doc: &DocInfo, fields: Arc<Vec<Fi
         let owned_doc = doc.clone();
         let kept = kept.clone();
         let skipped = skipped.clone();
-        let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_abandoned = abandoned.clone();
         let spawned = std::thread::Builder::new().name("pdfcraft-js".into()).stack_size(SCRIPT_STACK).spawn(move || {
+            let slot = ScriptSlot;
             let outcome = run_here(&owned_script, &owned_event, &owned_doc, fields, &kept, &skipped, limits);
-            if worker_abandoned.load(std::sync::atomic::Ordering::Acquire) {
-                ABANDONED_SCRIPTS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            }
+            // The slot goes back before the outcome is handed over, so a caller that has been
+            // answered knows the worker is done with it (a panic unwinds through `Drop` too).
+            drop(slot);
             let _ = tx.send(outcome);
         });
         if let Err(e) = spawned {
+            // No worker ran; the reservation it would have held goes back at once.
+            SCRIPT_WORKERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             return failed(format!("the script engine could not start: {e}"));
         }
         match rx.recv_timeout(SCRIPT_TIMEOUT) {
             Ok(outcome) => outcome,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if !abandoned.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                    ABANDONED_SCRIPTS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                }
                 failed(format!("the script ran longer than {:.1} s and was abandoned", SCRIPT_TIMEOUT.as_secs_f64()))
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => failed("the script stopped with an internal error".into()),

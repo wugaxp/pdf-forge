@@ -70,12 +70,14 @@ pub(crate) fn encrypt_dict(doc: &Document, d: &Dict) -> EncryptDict {
 
 /// The crypt filter a stream names in its `/Filter` chain (`/Crypt` + `/DecodeParms /Name`).
 fn named_crypt_filter(dict: &Dict) -> Option<Vec<u8>> {
-    let names: Vec<&[u8]> = match dict.get(b"Filter") {
-        Some(Object::Name(n)) => vec![n],
-        Some(Object::Array(a)) => a.iter().filter_map(Object::as_name).collect(),
+    // `/Crypt`'s place in the filter chain, taken on the raw entries: `/DecodeParms` lines up
+    // with `/Filter` entry by entry, and a chain may hold entries that are not names (an
+    // indirect one this reader cannot follow, say) which must not shift the index.
+    let i = match dict.get(b"Filter") {
+        Some(Object::Name(n)) if n.as_slice() == b"Crypt" => 0,
+        Some(Object::Array(a)) => a.iter().position(|n| n.as_name() == Some(b"Crypt"))?,
         _ => return None,
     };
-    let i = names.iter().position(|n| *n == b"Crypt")?;
     let parms = match dict.get(b"DecodeParms") {
         Some(Object::Dict(d)) if i == 0 => Some(d.clone()),
         Some(Object::Array(a)) => a.get(i).and_then(|p| p.as_dict().cloned()),
@@ -198,5 +200,47 @@ fn walk(o: &Object, strings: &dyn Fn(&PdfString) -> PdfString, h: &SecurityHandl
             Object::Stream(Stream { dict, raw: raw.into() })
         }
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parms(name: &str) -> Object {
+        let mut p = Dict::new();
+        p.set(b"Name".to_vec(), Object::name(name));
+        Object::Dict(p)
+    }
+
+    /// `/DecodeParms` lines up with `/Filter` entry by entry: an entry that is not a name (one
+    /// this reader cannot follow, say) must not shift the crypt filter's place, or the stream is
+    /// read under another filter's name — or as `Identity`, leaving it in clear.
+    #[test]
+    fn the_named_crypt_filter_reads_the_decode_parms_of_its_own_place() {
+        let mut one = Dict::new();
+        one.set(b"Filter".to_vec(), Object::name("Crypt"));
+        one.set(b"DecodeParms".to_vec(), parms("MyCF"));
+        assert_eq!(named_crypt_filter(&one), Some(b"MyCF".to_vec()));
+        // A mixed chain: `/Crypt` is the second entry, and so is its parameter dictionary.
+        let mut mixed = Dict::new();
+        mixed.set(b"Filter".to_vec(), Object::Array(vec![Object::Null, Object::name("Crypt")]));
+        mixed.set(b"DecodeParms".to_vec(), Object::Array(vec![parms("First"), parms("Second")]));
+        assert_eq!(named_crypt_filter(&mixed), Some(b"Second".to_vec()), "the raw entries' index, not the names'");
+        // Dropping the selector agrees with reading it: the same place comes out of both arrays.
+        let mut dropped = mixed.clone();
+        drop_crypt_filter(&mut dropped);
+        let filters = dropped.get(b"Filter").and_then(Object::as_array).cloned().unwrap_or_default();
+        let left = dropped.get(b"DecodeParms").and_then(Object::as_array).cloned().unwrap_or_default();
+        assert_eq!((filters.len(), left.len()), (1, 1), "{dropped:?}");
+        assert_eq!(left[0].as_dict().and_then(|p| p.name(b"Name")), Some(b"First".as_slice()));
+        // `/Crypt` with no parameters names `Identity`; a chain without `/Crypt` names nothing.
+        let mut bare = Dict::new();
+        bare.set(b"Filter".to_vec(), Object::Array(vec![Object::name("Crypt")]));
+        assert_eq!(named_crypt_filter(&bare), Some(b"Identity".to_vec()));
+        let mut none = Dict::new();
+        none.set(b"Filter".to_vec(), Object::Array(vec![Object::name("FlateDecode")]));
+        assert_eq!(named_crypt_filter(&none), None);
+        assert_eq!(named_crypt_filter(&Dict::new()), None);
     }
 }

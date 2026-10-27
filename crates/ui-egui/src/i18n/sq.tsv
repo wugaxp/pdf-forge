@@ -58,7 +58,7 @@
 	A summary describes the table's purpose and layout. Add a Summary attribute to each table.	Një përmbledhje përshkruan qëllimin dhe strukturën e tabelës. Shtoni atributin Summary në çdo tabelë.
 	AI assistant	Asistenti AI
 	About	Rreth
-	About PdfCraft	Rreth PdfCraft
+	About PDF Forge	Rreth PDF Forge
 	Accepted	Pranuar
 	Accessibility	Qasshmëria
 	Accessibility Checker	Kontrolluesi i qasshmërisë
@@ -229,7 +229,6 @@
 	Archive documents	Arkivo dokumentet
 	Area	Sipërfaqja
 	Arrow	Shigjetë
-	ArtCraft website	Faqja e internetit e ArtCraft
 	Ask about this document	Pyet për këtë dokument
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	I kërkon GitHub-it versionin më të fundit. Asgjë nuk shkarkohet ose instalohet automatikisht.
 	Associated with content	E lidhur me përmbajtjen
@@ -871,7 +870,6 @@
 	Full screen mode	Modaliteti me ekran të plotë
 	General	Të përgjithshme
 	Geospatial location	Vendndodhja gjeohapësinore
-	Get help, share feedback and follow development on Discord.	Merr ndihmë, ndaj komente dhe ndiq zhvillimin në Discord.
 	Go to a page view	Shko te një pamje faqeje
 	Go to page {p}	Shko te faqja {p}
 	Go to page…	Shko te faqja…
@@ -977,9 +975,6 @@
 	JavaScript console…	Konsola JavaScript…
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript është çaktivizuar (Preferencat > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, p.sh. getField("total").value
-	Join our Discord	Bashkohu me Discord-in tonë
-	Join the ArtCraft Discord	Bashkohu me Discord-in e ArtCraft
-	Join the ArtCraft community	Bashkohu me komunitetin e ArtCraft
 	July	Korrik
 	June	Qershor
 	Justify	Drejto në të dyja anët
@@ -1297,7 +1292,6 @@
 	Pages with links, comments or fields should tab in structure order. The fix sets each page's tab order to Use Document Structure.	Faqet me lidhje, komente ose fusha duhet të kalojnë me tab sipas radhës së strukturës. Rregullimi vendos radhën e tab-it të çdo faqeje te Përdor strukturën e dokumentit.
 	Pages:	Faqet:
 	Paper:	Letra:
-	Part of	Pjesë e
 	Passed	Kaloi
 	Password	Fjalëkalimi
 	Password protection will be applied when you save	Mbrojtja me fjalëkalim do të zbatohet kur të ruash
@@ -1311,11 +1305,10 @@
 	Patterns	Modelet
 	Patterns (graphics objects)	Modelet (objekte grafike)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft nuk u mbyll normalisht. Këta dokumente kishin ndryshime të ruajtura automatikisht:
-	PdfCraft on GitHub	PdfCraft në GitHub
-	PdfCraft web page	Faqja ueb e PdfCraft
+	PDF Forge on GitHub	PDF Forge në GitHub
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft funksionon pa internet. Pa telemetri, pa llogari dhe pa përpunim në re, përveçse nëse shton një ofrues.
-	PdfCraft {c} is up to date.	PdfCraft {c} është i përditësuar.
-	PdfCraft {v} is available.	PdfCraft {v} është i disponueshëm.
+	PDF Forge {c} is up to date.	PDF Forge {c} është i përditësuar.
+	PDF Forge {v} is available.	PDF Forge {v} është i disponueshëm.
 	People may need more time to respond. Check that nothing has a time limit.	Njerëzit mund të kenë nevojë për më shumë kohë për të përgjigjur. Kontrollo që asgjë të mos ketë kufi kohe.
 	Percentage	Përqindja
 	Perimeter	Perimetri
@@ -1847,7 +1840,6 @@
 	This field is locked. Unlock it to change its properties.	Kjo fushë është e kyçur. Shkyçeni për të ndryshuar veçoritë e saj.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Ky skedar ishte i dëmtuar dhe u riparua. Ruajtja mban versionin e riparuar.
 	This folder isn't available right now. It may have moved, or its drive or cloud sync is offline.	Kjo dosje nuk është e disponueshme tani. Mund të jetë zhvendosur, ose disku apo sinkronizimi i saj në re është jashtë linje.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Ky formular përmban edhe të dhëna XFA, të cilat PdfCraft ende nuk i lexon. Mund t'i plotësoni fushat e tij, por Acrobat mund të shfaqë në vend të tyre vlerat XFA.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Ky është një formular dinamik XFA, të cilin PdfCraft ende nuk mund ta shfaqë. Ajo që shihni është faqja zëvendësuese e skedarit.
 	This measurement needs at least {n} points.	Kjo matje kërkon të paktën {n} pika.
 	This page couldn't be displayed.\n{e}	Kjo faqe nuk u shfaq dot.\n{e}
@@ -1964,7 +1956,7 @@
 	Warnings	Paralajmërimet
 	Watermark	Filigran
 	Weak	E dobët
-	Welcome to PdfCraft	Mirë se vini në PdfCraft
+	Welcome to PDF Forge	Mirë se vini në PDF Forge
 	What word or phrase would you like to search for?	Çfarë fjale ose fraze do të kërkoni?
 	Whole words only	Vetëm fjalë të plota
 	Width	Gjerësia

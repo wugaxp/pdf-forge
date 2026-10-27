@@ -141,7 +141,7 @@
 	Accessibility	Prieinamumas
 	Help…	Žinynas…
 	Check for updates…	Tikrinti, ar yra naujinimų…
-	About PdfCraft	Apie „PdfCraft“
+	About PDF Forge	Apie „PDF Forge“
 	Automatically	Automatiškai
 	Never	Niekada
 	Always	Visada
@@ -619,7 +619,6 @@
 	From {file}	Iš {file}
 	From:	Nuo:
 	Front side only	Tik priekinė pusė
-	Get help, share feedback and follow development on Discord.	Gaukite pagalbos, pateikite atsiliepimų ir sekite naujienas „Discord“.
 	Go to a page view	Pereiti į puslapio rodinį
 	Go to page {p}	Pereiti į puslapį {p}
 	Go to the page	Pereiti į puslapį
@@ -673,8 +672,6 @@
 	JavaScript Console	JavaScript konsolė
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript išjungtas (Nuostatos > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, pvz., getField("total").value
-	Join our Discord	Prisijunkite prie mūsų „Discord“ serverio
-	Join the ArtCraft community	Prisijunkite prie „ArtCraft“ bendruomenės
 	Justify	Abipusė lygiuotė
 	Keep source fonts	Išsaugoti šaltinio šriftus
 	Keep tool selected	Palikti įrankį pasirinktą
@@ -898,7 +895,6 @@
 	Pages:	Puslapiai:
 	Pages: {k} of {n}	Puslapiai: {k} iš {n}
 	Paper:	Popierius:
-	Part of	Dalis iš
 	Password	Slaptažodis
 	Password required	Reikalingas slaptažodis
 	Password security	Apsauga slaptažodžiu
@@ -910,8 +906,8 @@
 	Patterns (graphics objects)	Šablonai (grafiniai objektai)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	„PdfCraft“ buvo uždaryta netinkamai. Šių dokumentų pakeitimai buvo automatiškai įrašyti:
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	„PdfCraft“ veikia neprisijungus. Nerenkami telemetrijos duomenys, nereikia paskyros ir nenaudojamos debesijos paslaugos, nebent pridėtumėte jų teikėją.
-	PdfCraft {c} is up to date.	Naudojate naujausią „PdfCraft“ versiją {c}.
-	PdfCraft {v} is available.	Išleista „PdfCraft“ versija {v}.
+	PDF Forge {c} is up to date.	Naudojate naujausią „PDF Forge“ versiją {c}.
+	PDF Forge {v} is available.	Išleista „PDF Forge“ versija {v}.
 	Percentage	Procentai
 	Permissions password	Teisių slaptažodis
 	Permitted actions after certifying	Po patvirtinimo leidžiami veiksmai
@@ -1310,7 +1306,7 @@
 	Visible Rectangle	Matomo stačiakampio anotacija
 	Visual	Vaizdinis
 	Warnings	Įspėjimai
-	Welcome to PdfCraft	Sveiki atvykę į „PdfCraft“
+	Welcome to PDF Forge	Sveiki atvykę į „PDF Forge“
 	What word or phrase would you like to search for?	Kokio žodžio ar frazės norite ieškoti?
 	Whole words only	Tik ištisi žodžiai
 	Width:	Plotis:
@@ -1387,7 +1383,6 @@
 	Archive documents	Archyvuoti dokumentus
 	Area	Plotas
 	Arrow	Rodyklė
-	ArtCraft website	„ArtCraft“ svetainė
 	Ask about this document	Klausti apie šį dokumentą
 	Attach a file	Pridėti failą
 	Attach file	Pridėti failą
@@ -1526,7 +1521,6 @@
 	Insert text	Įterpti tekstą
 	JavaScript	JavaScript
 	JavaScript console…	JavaScript konsolė…
-	Join the ArtCraft Discord	Prisijungti prie „ArtCraft“ „Discord“ serverio
 	Light gray	Šviesiai pilka
 	Line	Linija
 	Link	Saitas
@@ -1557,8 +1551,7 @@
 	Page options	Puslapio parinktys
 	Page transitions	Puslapių perėjimai
 	Paste pages	Įdėti puslapius
-	PdfCraft on GitHub	„PdfCraft“ „GitHub“ puslapis
-	PdfCraft web page	„PdfCraft“ svetainė
+	PDF Forge on GitHub	„PDF Forge“ „GitHub“ puslapis
 	Perimeter	Perimetras
 	Pin folder to Home…	Prisegti aplanką prie pradžios lango…
 	PostScript / EPS	PostScript / EPS
@@ -2410,7 +2403,6 @@ comment menu	Edit	Redaguoti
 	This document has no form fields.	Šiame dokumente nėra formos laukų.
 	This document has no layers.	Šiame dokumente nėra sluoksnių.
 	This file is already as small as it can be made ({size}). No copy was saved.	Šio failo daugiau sumažinti negalima ({size}). Kopija neįrašyta.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Ši forma taip pat turi XFA duomenų, kurių „PdfCraft“ dar neskaito. Laukus galite pildyti, tačiau „Acrobat“ gali rodyti XFA reikšmes.
 	Thumbnails	Miniatiūros
 	Timed responses	Atsakymai per ribotą laiką
 	Type Password	Įveskite slaptažodį

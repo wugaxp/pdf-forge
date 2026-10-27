@@ -133,27 +133,90 @@ pub(crate) fn touched(doc: &Document, resources: &Dict, before: &[u8], after: &[
     (changed, empty)
 }
 
-fn mcid_of(doc: &Document, o: &Object, page: Option<ObjRef>, target: ObjRef, stream: Option<(ObjRef, ObjRef)>) -> Option<i64> {
+/// The content stream a cleanup replaces: a page's own (rewritten stream by rewritten stream),
+/// or one form XObject's. Marked content is named bare (a number, or an `/MCR` with no `/Stm`)
+/// in a page's content, and through `/Stm` in either.
+pub(crate) enum Streams<'a> {
+    /// The page content streams this pass replaced: each old object and its rewrite. Every
+    /// `/MCR` naming one is repointed at the rewrite, so the old stream is not kept reachable
+    /// (its bytes still hold what the redaction removed).
+    Page(&'a [(ObjRef, ObjRef)]),
+    /// The form XObject stream this pass replaced: the old object and its rewrite.
+    Form(ObjRef, ObjRef),
+}
+
+impl Streams<'_> {
+    /// The rewrite of the stream `r` names, if this pass replaced it.
+    fn replacement(&self, r: ObjRef) -> Option<(ObjRef, ObjRef)> {
+        match self {
+            Streams::Page(pairs) => pairs.iter().find(|(old, _)| *old == r).copied(),
+            Streams::Form(old, new) => (r == *old).then_some((*old, *new)),
+        }
+    }
+
+    /// Marked content can be named bare (a number, or an `/MCR` with no `/Stm`): the page's own
+    /// content is written that way, a form's never is.
+    fn page_content(&self) -> bool {
+        matches!(self, Streams::Page(_))
+    }
+
+    /// Whether any `/MCR` may need repointing.
+    fn has_replaced(&self) -> bool {
+        match self {
+            Streams::Page(pairs) => !pairs.is_empty(),
+            Streams::Form(..) => true,
+        }
+    }
+}
+
+/// The marked content a kid names — its `/MCID`, when the kid is this cleanup's to change:
+/// `streams` holds its content stream, or the kid names it bare and it is the page's own.
+fn mcid_of(doc: &Document, o: &Object, page: Option<ObjRef>, target: ObjRef, streams: &Streams<'_>) -> Option<i64> {
     match &*doc.resolve(o) {
-        Object::Int(n) if page == Some(target) && stream.is_none() => Some(*n),
+        Object::Int(n) if page == Some(target) && streams.page_content() => Some(*n),
         Object::Dict(m) if m.name(b"Type") == Some(b"MCR") => {
             let pg = m.get(b"Pg").and_then(Object::as_ref).or(page);
-            let stm = m.get(b"Stm").and_then(Object::as_ref);
-            (pg == Some(target) && stm == stream.map(|s| s.0)).then(|| m.int(b"MCID")).flatten()
+            let mine = match m.get(b"Stm").and_then(Object::as_ref) {
+                Some(stm) => streams.replacement(stm).is_some(),
+                // No `/Stm`: the marked content is in the page's own content stream.
+                None => streams.page_content(),
+            };
+            (pg == Some(target) && mine).then(|| m.int(b"MCID")).flatten()
         }
         _ => None,
     }
 }
 
-/// Clean the elements owning `changed` marked content on `page`; returns how many changed.
+/// Whether a kid names a content stream this cleanup replaces through `/Stm` or `/StmOwn`, so
+/// its references must follow the rewrite (or, for an element written in place, the operation
+/// must be refused: only rewriting what holds the element could change it).
+fn names_replaced(doc: &Document, o: &Object, streams: &Streams<'_>) -> bool {
+    let resolved = doc.resolve(o);
+    let Some(m) = resolved.as_dict() else { return false };
+    [&b"Stm"[..], b"StmOwn"].iter().any(|key| m.get(key).and_then(Object::as_ref).is_some_and(|r| streams.replacement(r).is_some()))
+}
+
+/// Repoint `/Stm` and `/StmOwn` at the rewritten stream they name.
+fn remap_stm(m: &mut Dict, streams: &Streams<'_>) {
+    for key in [&b"Stm"[..], b"StmOwn"] {
+        if let Some(r) = m.get(key).and_then(Object::as_ref)
+            && let Some((_, new)) = streams.replacement(r)
+        {
+            m.set(key.to_vec(), Object::Ref(new));
+        }
+    }
+}
+
+/// Clean the elements owning `changed` marked content on `page`, and repoint the marked-content
+/// references to the replaced `streams`; returns how many changed.
 pub(crate) fn clean(
     doc: &mut Document,
     page: ObjRef,
-    stream: Option<(ObjRef, ObjRef)>,
+    streams: Streams<'_>,
     changed: &HashSet<i64>,
     empty: &HashSet<i64>,
 ) -> Result<usize, RedactError> {
-    clean_within(doc, page, stream, changed, empty, MAX_STRUCT_REFS)
+    clean_within(doc, page, streams, changed, empty, MAX_STRUCT_REFS)
 }
 
 /// [`clean`], visiting at most `limit` structure-tree references. Fail-closed (#3302): when the
@@ -164,12 +227,12 @@ pub(crate) fn clean(
 pub(crate) fn clean_within(
     doc: &mut Document,
     page: ObjRef,
-    stream: Option<(ObjRef, ObjRef)>,
+    streams: Streams<'_>,
     changed: &HashSet<i64>,
     empty: &HashSet<i64>,
     limit: usize,
 ) -> Result<usize, RedactError> {
-    if changed.is_empty() && stream.is_none() {
+    if changed.is_empty() && !streams.has_replaced() {
         return Ok(0);
     }
     let Some(root) = doc
@@ -191,7 +254,9 @@ pub(crate) fn clean_within(
     let mut hits: Vec<(ObjRef, Dict, Option<ObjRef>, bool)> = Vec::new();
     // Whether marked content `x` (a kid on page `pg`) is one this cleanup must change.
     let touches = |doc: &Document, x: &Object, pg: Option<ObjRef>| {
-        mcid_of(doc, x, pg, page, stream).is_some_and(|m| stream.is_some() || changed.contains(&m) || empty.contains(&m))
+        // A kid naming a replaced stream must be repointed; written in place, only rewriting
+        // what holds the element could do that, so the operation is refused.
+        names_replaced(doc, x, &streams) || mcid_of(doc, x, pg, page, &streams).is_some_and(|m| changed.contains(&m) || empty.contains(&m))
     };
     while let Some((k, pg, above)) = todo.pop() {
         match k {
@@ -236,8 +301,8 @@ pub(crate) fn clean_within(
                     None => inherited_page(doc, &d, &mut pages)?,
                 };
                 let kids = kids_of(doc, &d);
-                let sensitive = kids.iter().any(|x| mcid_of(doc, x, pg, page, stream).is_some_and(|m| changed.contains(&m)));
-                let remap = stream.is_some() && kids.iter().any(|x| mcid_of(doc, x, pg, page, stream).is_some());
+                let sensitive = kids.iter().any(|x| mcid_of(doc, x, pg, page, &streams).is_some_and(|m| changed.contains(&m)));
+                let remap = kids.iter().any(|x| names_replaced(doc, x, &streams));
                 if sensitive || remap {
                     hits.push((r, d.clone(), pg, sensitive));
                 }
@@ -258,23 +323,15 @@ pub(crate) fn clean_within(
         };
         let mut keep = Vec::new();
         for mut kid in list {
-            let mcid = mcid_of(doc, &kid, pg, page, stream);
+            let mcid = mcid_of(doc, &kid, pg, page, &streams);
             if mcid.is_some_and(|m| empty.contains(&m)) {
                 continue;
             }
-            if let Some((original, replacement)) = stream.filter(|_| mcid.is_some()) {
+            if names_replaced(doc, &kid, &streams) {
                 if let Some(reference) = kid.as_ref() {
-                    doc.update_dict(reference, |m| {
-                        m.set(b"Stm".to_vec(), Object::Ref(replacement));
-                        if m.get(b"StmOwn").and_then(Object::as_ref) == Some(original) {
-                            m.set(b"StmOwn".to_vec(), Object::Ref(replacement));
-                        }
-                    })?;
+                    doc.update_dict(reference, |m| remap_stm(m, &streams))?;
                 } else if let Object::Dict(m) = &mut kid {
-                    m.set(b"Stm".to_vec(), Object::Ref(replacement));
-                    if m.get(b"StmOwn").and_then(Object::as_ref) == Some(original) {
-                        m.set(b"StmOwn".to_vec(), Object::Ref(replacement));
-                    }
+                    remap_stm(m, &streams);
                 }
             }
             keep.push(kid);

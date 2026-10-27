@@ -148,6 +148,9 @@ pub struct PrepareView {
     marquee_before: Option<Vec<(String, usize)>>,
     /// Escape ends egui's drag too; ignore its release until the mouse is up.
     ignore_release: bool,
+    /// The Fields panel's rows as they were last built ([`crate::panels::Rows`]): a large form's
+    /// map and sort ran on every frame before they were kept.
+    pub(crate) field_rows: Option<std::sync::Arc<crate::panels::Rows>>,
 }
 
 impl PrepareView {

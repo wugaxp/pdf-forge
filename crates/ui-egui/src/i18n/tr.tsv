@@ -60,7 +60,6 @@
 	Flatten Fill & Sign when saving	Kaydederken Doldur ve İmzala'yı düzleştir
 	Text, marks and signatures become part of the page. Other comments stay editable.	Metin, işaretler ve imzalar sayfanın bir parçası olur. Diğer yorumlar düzenlenebilir kalır.
 	OK	Tamam
-	Join our Discord	Discord'umuza katılın
 	Close	Kapat
 	Next / previous match	Sonraki / önceki eşleşme
 	Copy selected text	Seçilen metni kopyala
@@ -123,10 +122,8 @@
 	Previous page	Önceki sayfa
 	Current page — type a page number or label (such as iv) and press Enter	Geçerli sayfa — bir sayfa numarası veya etiketi (örneğin iv) yazıp Enter'a basın
 	Zoom — type a percentage and press Enter	Yakınlaştırma — bir yüzde yazıp Enter tuşuna basın
-	Welcome to PdfCraft	PdfCraft'a Hoş Geldiniz
+	Welcome to PDF Forge	PDF Forge'a Hoş Geldiniz
 	An open-source PDF workbench — local, private, and scriptable.	Açık kaynaklı bir PDF çalışma alanı — yerel, gizli ve komut dosyalarıyla yönetilebilir.
-	Join the ArtCraft community	ArtCraft topluluğuna katılın
-	Get help, share feedback and follow development on Discord.	Discord'da yardım alın, geri bildirim paylaşın ve geliştirmeyi takip edin.
 	Recommended tools	Önerilen araçlar
 	Use now	Şimdi kullan
 	Open file	Dosya aç
@@ -271,12 +268,9 @@
 	Split document…	Belgeyi böl…
 	Number pages…	Sayfaları numaralandır…
 	Keyboard shortcuts	Klavye kısayolları
-	Join the ArtCraft Discord	ArtCraft Discord'una katıl
-	PdfCraft web page	PdfCraft web sayfası
-	PdfCraft on GitHub	GitHub'da PdfCraft
-	ArtCraft website	ArtCraft web sitesi
+	PDF Forge on GitHub	GitHub'da PDF Forge
 	Check for updates…	Güncellemeleri denetle…
-	About PdfCraft	PdfCraft hakkında
+	About PDF Forge	PDF Forge hakkında
 	Export a PDF	PDF'i dışa aktar
 	Export to	Şuraya aktar
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -764,9 +758,9 @@
 	Check for updates	Güncellemeleri denetle
 	No check has run yet.	Henüz denetim yapılmadı.
 	Checking for a newer version…	Daha yeni bir sürüm denetleniyor…
-	PdfCraft {v} is available.	PdfCraft {v} kullanılabilir.
+	PDF Forge {v} is available.	PDF Forge {v} kullanılabilir.
 	You have version {c}. Download the new version from its release page.	{c} sürümüne sahipsiniz. Yeni sürümü sürüm sayfasından indirin.
-	PdfCraft {c} is up to date.	PdfCraft {c} güncel.
+	PDF Forge {c} is up to date.	PDF Forge {c} güncel.
 	Couldn't check for updates: {e}	Güncellemeler denetlenemedi: {e}
 	You have version {c}. All releases are listed at {page}.	{c} sürümüne sahipsiniz. Tüm sürümler {page} adresinde listelenmiştir.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	En son sürüm için GitHub'ı sorgular. Hiçbir şey otomatik olarak indirilmez veya kurulmaz.
@@ -1406,7 +1400,6 @@
 	Discard	Yoksay
 	Version {v}	Sürüm {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Rust ile yazılmış, temiz oda tekniğiyle geliştirilmiş açık kaynaklı bir PDF uygulaması. MIT VEYA Apache-2.0.
-	Part of	Şunun parçası:
 	Summarize Options	Özetleme Seçenekleri
 	Choose a layout:	Bir düzen seçin:
 	Comments only	Yalnızca yorumlar
@@ -1729,7 +1722,6 @@
 	At least one signature has problems.	En az bir imzada sorun var.
 	This document is secured. Some changes are restricted by its security settings.	Bu belge güvenlidir. Bazı değişiklikler güvenlik ayarlarıyla kısıtlanmıştır.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Bu, PdfCraft'ın henüz görüntüleyemediği dinamik bir XFA formudur. Gördüğünüz şey dosyanın yer tutucu sayfasıdır.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Bu form aynı zamanda PdfCraft'ın henüz okumadığı XFA verilerini de içerir. Alanlarını doldurabilirsiniz ancak Acrobat bunun yerine XFA değerlerini gösterebilir.
 	This document contains {n} interactive form fields.	Bu belge {n} etkileşimli form alanı içeriyor.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Bu dosya hasarlıydı ve onarıldı. Kaydetmek onarılan sürümü korur.
 	Dismiss	Kapat

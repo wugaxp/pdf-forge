@@ -8,7 +8,7 @@ use pdfcraft_content::Matrix;
 use pdfcraft_cos::{Dict, Document, ObjRef, Object};
 
 use crate::interp::{Mode, Scope, process};
-use crate::{RedactError, Report, annots_of, listed_annotations, page_streams, page_streams_within};
+use crate::{RedactError, Report, annots_of, listed_annotations, page_streams_within};
 
 /// The categories of Acrobat's Remove Hidden Information panel that PdfCraft handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -342,16 +342,19 @@ fn hidden_layers(doc: &Document) -> Vec<ObjRef> {
     }
 }
 
-/// Glyphs of hidden text, or content of hidden layers, on every page (`write` = remove them).
-fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Result<(usize, std::collections::HashSet<ObjRef>), RedactError> {
+/// Hidden text glyphs, and hidden layer blocks, on every page (`write` = remove them), with the
+/// off groups that content still references (their default state must survive).
+fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Result<(usize, usize, std::collections::HashSet<ObjRef>), RedactError> {
     let off = if layers { hidden_layers(doc) } else { Vec::new() };
     if !text && !layers {
-        return Ok((0, std::collections::HashSet::new()));
+        return Ok((0, 0, std::collections::HashSet::new()));
     }
-    let mut total = 0;
+    let (mut text_total, mut layers_total) = (0, 0);
     let mut retained_off_layers = std::collections::HashSet::new();
     // The original image and form XObjects the rewrite drops or replaces, on any page.
     let mut doomed = Vec::new();
+    // The content streams the rewrite replaces, on any page: nothing may keep one reachable.
+    let mut replaced_content = std::collections::HashSet::new();
     let mut retired_properties = Vec::new();
     let pages = pdfcraft_model::pages(doc);
     for (pi, page) in pages.iter().enumerate() {
@@ -362,7 +365,8 @@ fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Re
             }
             // Content that can't be read may hide anything: count it so the removal runs and
             // refuses the page, instead of a zero count skipping it.
-            total += 1;
+            text_total += 1;
+            layers_total += 1;
             continue;
         };
         let resources = page.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
@@ -383,17 +387,28 @@ fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Re
         let glyphs = scope.report.glyphs;
         let retained_for_page = std::mem::take(&mut scope.retained_off_layers);
         drop(scope);
-        total += out.residue + blocks + glyphs;
+        // Hidden text is what shows nothing (or shows outside the page); hidden layers are
+        // removed block by block.
+        text_total += out.residue + glyphs;
+        layers_total += blocks;
         retained_off_layers.extend(retained_for_page);
         if !write {
             continue;
         }
         doomed.extend_from_slice(&out.doomed);
         retired_properties.extend(out.retired_properties);
+        // The rewritten content of each stream (never re-decoded: it was just written) and the
+        // old streams it replaces, swept like a replaced form's so nothing keeps their bytes
+        // reachable in the saved file.
+        let mut new_content: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(list.len());
+        let mut replaced_streams: Vec<(ObjRef, ObjRef)> = Vec::new();
         let mut new_list = list.clone();
         let mut changed = false;
         for (i, new) in out.streams.into_iter().enumerate() {
-            let Some(bytes) = new else { continue };
+            let Some(bytes) = new else {
+                new_content.push(std::borrow::Cow::Borrowed(data[i].as_slice()));
+                continue;
+            };
             let mut dict = match &*doc.resolve(&list[i]) {
                 Object::Stream(s) => s.dict.clone(),
                 _ => Dict::new(),
@@ -401,53 +416,84 @@ fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Re
             dict.remove(b"Length");
             // The source text of an added item (Edit ▸ Add content) would keep what was removed.
             dict.remove(b"PCAdded");
-            new_list[i] = Object::Ref(doc.add(Object::Stream(pdfcraft_cos::Stream::flate(dict, &bytes))));
+            let replacement = doc.add(Object::Stream(pdfcraft_cos::Stream::flate(dict, &bytes)));
+            if let Some(original) = list[i].as_ref() {
+                doomed.push(original);
+                replaced_content.insert(original);
+                replaced_streams.push((original, replacement));
+            }
+            new_list[i] = Object::Ref(replacement);
+            new_content.push(std::borrow::Cow::Owned(bytes));
             changed = true;
         }
         if changed || !out.xobjects.is_empty() || !out.replaced.is_empty() {
             // Pin inherited resources before replacing them. When no page still inherits the
             // original holder, retiring it also retires descriptions no longer used anywhere.
             crate::localize_resources(doc, &[pi])?;
-            let mut cleaned_page = page.dict.clone();
-            cleaned_page.set(b"Contents".to_vec(), Object::Array(new_list.clone()));
-            let (_, page_content) = page_streams(doc, &cleaned_page, pi)?;
             let mut res = resources.clone();
             if !out.xobjects.is_empty() || !out.replaced.is_empty() {
                 let mut xo = res.get(b"XObject").and_then(|x| doc.resolve(x).as_dict().cloned()).unwrap_or_default();
                 // A full save keeps whatever is still referenced: unlink the originals this page no
                 // longer draws so the removed form or image bytes cannot survive in the saved file.
-                crate::interp::prune(&mut xo, &out.replaced, &page_content);
+                crate::interp::prune(&mut xo, &out.replaced, &new_content);
                 for (n, r) in &out.xobjects {
                     xo.set(n.clone(), Object::Ref(*r));
                 }
                 res.set(b"XObject".to_vec(), Object::Dict(xo));
             }
-            retired_properties.extend(crate::interp::prune_properties(doc, &mut res, &page_content)?);
+            retired_properties.extend(crate::interp::prune_properties(doc, &mut res, &new_content)?);
             doc.update_dict(page.obj, |d| {
                 d.set(b"Contents".to_vec(), Object::Array(new_list));
                 d.set(b"Resources".to_vec(), Object::Dict(res));
             })?;
-            // Tags must not describe or point at what the page no longer shows.
+            // Tags must not describe or point at what the page no longer shows, and their
+            // marked-content references follow the rewritten streams.
             let (changed_ids, empty_ids) = crate::tags::touched(
                 doc,
                 &resources,
                 pdfcraft_content::Pieces::join(&data).data(),
-                pdfcraft_content::Pieces::join(&page_content).data(),
+                pdfcraft_content::Pieces::join(&new_content).data(),
             );
-            crate::tags::clean(doc, page.obj, None, &changed_ids, &empty_ids)?;
+            crate::tags::clean(doc, page.obj, crate::tags::Streams::Page(&replaced_streams), &changed_ids, &empty_ids)?;
         }
         for (old, new, changed, empty) in out.tag_changes {
-            crate::tags::clean(doc, page.obj, Some((old, new)), &changed, &empty)?;
+            crate::tags::clean(doc, page.obj, crate::tags::Streams::Form(old, new), &changed, &empty)?;
         }
     }
     // What a page no longer draws must not stay reachable through an inherited or shared
-    // /Resources either.
+    // /Resources either, and nothing may name a rewritten content stream without drawing it.
     crate::interp::unlink_doomed(doc, &doomed, &retired_properties)?;
-    Ok((total, retained_off_layers))
+    crate::interp::check_replaced_unreachable(doc, &replaced_content)?;
+    Ok((text_total, layers_total, retained_off_layers))
 }
 
 /// How many items each category would remove (categories with nothing are included as 0).
 pub fn scan(doc: &Document) -> Vec<(Hidden, usize)> {
+    let mut counts = counts_except_content(doc);
+    // One interpretation of the pages counts hidden text and hidden layers together: what they
+    // remove is disjoint (invisible glyphs versus off-layer blocks).
+    let mut doc2 = doc.clone();
+    if let Ok((text, layers, _)) = content_pass(&mut doc2, true, true, false) {
+        for (h, n) in &mut counts {
+            match h {
+                Hidden::HiddenText => *n = text,
+                Hidden::HiddenLayers => *n += layers,
+                _ => {}
+            }
+        }
+    }
+    counts
+}
+
+/// What the scan found for one category.
+fn count(counts: &[(Hidden, usize)], h: Hidden) -> usize {
+    counts.iter().find(|c| c.0 == h).map_or(0, |c| c.1)
+}
+
+/// [`scan`] without interpreting the pages: every category but HiddenText and HiddenLayers,
+/// which the one removal pass counts as it removes them (a counting pass of its own would run
+/// the whole interpretation twice).
+fn counts_except_content(doc: &Document) -> Vec<(Hidden, usize)> {
     let cat = catalog(doc).map(|c| c.1).unwrap_or_default();
     let pages = pdfcraft_model::pages(doc);
     let annots: Vec<Dict> = pages.iter().flat_map(|p| annots_of(doc, &p.dict)).filter_map(|a| doc.resolve(&a).as_dict().cloned()).collect();
@@ -458,7 +504,6 @@ pub fn scan(doc: &Document) -> Vec<(Hidden, usize)> {
     // refuses it.
     let held = owners(doc, &owned_keys).map_or_else(|_| vec![1; OWNED.len()], |o| o.0);
     let owned = |h: Hidden| OWNED.iter().position(|o| o.0 == h).and_then(|i| held.get(i)).copied().unwrap_or(0);
-    let mut doc2 = doc.clone();
     HIDDEN
         .into_iter()
         .map(|h| {
@@ -483,11 +528,8 @@ pub fn scan(doc: &Document) -> Vec<(Hidden, usize)> {
                         0
                     }
                 }
-                Hidden::HiddenText => content_pass(&mut doc2, true, false, false).map(|(n, _)| n).unwrap_or(0),
-                Hidden::HiddenLayers => {
-                    let off = hidden_layers(doc).len();
-                    off + content_pass(&mut doc2, false, true, false).map(|(n, _)| n).unwrap_or(0)
-                }
+                Hidden::HiddenText => 0,
+                Hidden::HiddenLayers => hidden_layers(doc).len(),
                 Hidden::Bookmarks => sub(doc, &cat, b"Outlines").map_or(0, |o| outline_len(doc, o.get(b"First"), 0)),
                 Hidden::LinksActionsScripts => {
                     count_sub(b"Link")
@@ -511,15 +553,14 @@ pub fn scan(doc: &Document) -> Vec<(Hidden, usize)> {
 /// sensitive content still present. Call this on a working clone and replace the original only
 /// on success. On any error, discard the working clone; do not save or reuse it.
 pub fn remove_hidden(doc: &mut Document, which: &[Hidden]) -> Result<Vec<(Hidden, usize)>, RedactError> {
-    let counts = scan(doc);
-    let count = |h: Hidden| counts.iter().find(|c| c.0 == h).map_or(0, |c| c.1);
+    let mut counts = counts_except_content(doc);
     let (root, _) = catalog(doc).ok_or(RedactError::NothingToApply)?;
     let mut done = Vec::new();
     // Every annotation the pages list now: whatever is no longer listed at the end (flattened
     // widgets included) leaves the structure tree too.
     let listed_before = listed_annotations(doc);
     let has_acroform = doc.get(root).as_dict().is_some_and(|d| d.contains(b"AcroForm"));
-    let fields = which.contains(&Hidden::FormFields) && (count(Hidden::FormFields) > 0 || has_acroform);
+    let fields = which.contains(&Hidden::FormFields) && (count(&counts, Hidden::FormFields) > 0 || has_acroform);
     if fields {
         // Fields without appearances get one first, so their values stay visible.
         for f in pdfcraft_forms::fields(doc) {
@@ -534,10 +575,19 @@ pub fn remove_hidden(doc: &mut Document, which: &[Hidden]) -> Result<Vec<(Hidden
         })?;
     }
     // Content next (it needs the layers still in place). Flattened appearances are page content
-    // by now, so hidden text or layers inside them are removed with the rest.
+    // by now, so hidden text or layers inside them are removed with the rest. One pass removes
+    // and counts: a counting pass of its own would interpret every page twice.
     let (text, layers) = (which.contains(&Hidden::HiddenText), which.contains(&Hidden::HiddenLayers));
-    let retained_off_layers = if (text && (fields || count(Hidden::HiddenText) > 0)) || (layers && (fields || count(Hidden::HiddenLayers) > 0)) {
-        content_pass(doc, text, layers, true)?.1
+    let retained_off_layers = if text || layers {
+        let (hidden_text, hidden_layers_removed, retained) = content_pass(doc, text, layers, true)?;
+        for (h, n) in &mut counts {
+            match h {
+                Hidden::HiddenText => *n = hidden_text,
+                Hidden::HiddenLayers => *n += hidden_layers_removed,
+                _ => {}
+            }
+        }
+        retained
     } else {
         std::collections::HashSet::new()
     };
@@ -645,7 +695,7 @@ pub fn remove_hidden(doc: &mut Document, which: &[Hidden]) -> Result<Vec<(Hidden
             }
             _ => {}
         }
-        let n = if h == Hidden::FormFields && fields { count(h).max(1) } else { count(h) };
+        let n = if h == Hidden::FormFields && fields { count(&counts, h).max(1) } else { count(&counts, h) };
         if n > 0 {
             done.push((h, n));
         }

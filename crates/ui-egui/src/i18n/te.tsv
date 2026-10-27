@@ -73,7 +73,6 @@ comment menu	Edit	సవరించు
 	Side panels	సైడ్ ప్యానెల్‌లు
 	Enable Acrobat JavaScript	Acrobat JavaScriptను ప్రారంభించు
 	OK	సరే
-	Join our Discord	మా Discordలో చేరండి
 	Close	మూసివేయి
 	Next / previous match	తదుపరి / మునుపటి సరిపోలిక
 	Copy selected text	ఎంచుకున్న టెక్స్ట్‌ను కాపీ చేయి
@@ -142,10 +141,8 @@ comment menu	Edit	సవరించు
 	Previous page	మునుపటి పేజీ
 	Current page — type a page number or label (such as iv) and press Enter	ప్రస్తుత పేజీ — పేజీ సంఖ్యను లేదా లేబుల్‌ను (iv వంటిది) టైప్ చేసి Enter నొక్కండి
 	Zoom — type a percentage and press Enter	జూమ్ — శాతాన్ని టైప్ చేసి Enter నొక్కండి
-	Welcome to PdfCraft	PdfCraftకు స్వాగతం
+	Welcome to PDF Forge	PDF Forgeకు స్వాగతం
 	An open-source PDF workbench — local, private, and scriptable.	ఓపెన్-సోర్స్ PDF వర్క్‌బెంచ్ — మీ కంప్యూటర్‌లోనే నడుస్తుంది, గోప్యంగా ఉంటుంది, స్క్రిప్ట్‌లతో ఆటోమేట్ చేయవచ్చు.
-	Join the ArtCraft community	ArtCraft కమ్యూనిటీలో చేరండి
-	Get help, share feedback and follow development on Discord.	Discordలో సహాయం పొందండి, మీ అభిప్రాయాన్ని పంచుకోండి, అభివృద్ధిని అనుసరించండి.
 	Recommended tools	సిఫార్సు చేసిన సాధనాలు
 	Use now	ఇప్పుడే ఉపయోగించు
 	Open file	ఫైల్‌ను తెరువు
@@ -290,12 +287,9 @@ comment menu	Edit	సవరించు
 	Split document…	పత్రాన్ని విభజించు…
 	Number pages…	పేజీలకు సంఖ్యలు వేయి…
 	Keyboard shortcuts	కీబోర్డ్ షార్ట్‌కట్‌లు
-	Join the ArtCraft Discord	ArtCraft Discordలో చేరండి
-	PdfCraft web page	PdfCraft వెబ్ పేజీ
-	PdfCraft on GitHub	GitHubలో PdfCraft
-	ArtCraft website	ArtCraft వెబ్‌సైట్
+	PDF Forge on GitHub	GitHubలో PDF Forge
 	Check for updates…	అప్‌డేట్‌ల కోసం తనిఖీ చేయి…
-	About PdfCraft	PdfCraft గురించి
+	About PDF Forge	PDF Forge గురించి
 	Export a PDF	PDFను ఎగుమతి చేయి
 	Export to	ఎగుమతి ఫార్మాట్
 	Microsoft Word (.docx)	Microsoft Word పత్రం (.docx)
@@ -783,9 +777,9 @@ comment menu	Edit	సవరించు
 	Check for updates	అప్‌డేట్‌ల కోసం తనిఖీ చేయి
 	No check has run yet.	ఇంకా తనిఖీ జరగలేదు.
 	Checking for a newer version…	కొత్త వెర్షన్ కోసం తనిఖీ చేస్తోంది…
-	PdfCraft {v} is available.	PdfCraft {v} అందుబాటులో ఉంది.
+	PDF Forge {v} is available.	PDF Forge {v} అందుబాటులో ఉంది.
 	You have version {c}. Download the new version from its release page.	మీ వద్ద వెర్షన్ {c} ఉంది. కొత్త వెర్షన్‌ను దాని విడుదల పేజీ నుండి డౌన్‌లోడ్ చేసుకోండి.
-	PdfCraft {c} is up to date.	PdfCraft {c} తాజా వెర్షన్.
+	PDF Forge {c} is up to date.	PDF Forge {c} తాజా వెర్షన్.
 	Couldn't check for updates: {e}	అప్‌డేట్‌ల కోసం తనిఖీ చేయడం సాధ్యం కాలేదు: {e}
 	You have version {c}. All releases are listed at {page}.	మీ వద్ద వెర్షన్ {c} ఉంది. అన్ని విడుదలల జాబితా: {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	తాజా విడుదల గురించి GitHubను అడుగుతుంది. ఏదీ ఆటోమేటిక్‌గా డౌన్‌లోడ్ లేదా ఇన్‌స్టాల్ చేయబడదు.
@@ -1419,7 +1413,6 @@ signature pad	Type	టైప్ చేయి
 	Discard	విస్మరించు
 	Version {v}	వెర్షన్ {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Rustలో రాసిన క్లీన్-రూమ్, ఓపెన్-సోర్స్ PDF అప్లికేషన్. MIT OR Apache-2.0.
-	Part of	దీనిలో భాగం:
 	Summarize Options	సారాంశ ఎంపికలు
 	Choose a layout:	లేఅవుట్‌ను ఎంచుకోండి:
 	Comments only	వ్యాఖ్యలు మాత్రమే
@@ -1755,7 +1748,6 @@ action wizard	Start	ప్రారంభించు
 	At least one signature has problems.	కనీసం ఒక సంతకంలో సమస్యలు ఉన్నాయి.
 	This document is secured. Some changes are restricted by its security settings.	ఈ పత్రం రక్షించబడింది. దీని భద్రతా సెట్టింగ్‌లు కొన్ని మార్పులను పరిమితం చేస్తాయి.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	ఇది డైనమిక్ XFA ఫారం, దీన్ని ప్రదర్శించడానికి PdfCraftలో ఇంకా మద్దతు లేదు. మీరు చూస్తున్నది ఫైల్‌లోని ప్లేస్‌హోల్డర్ పేజీ.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	ఈ ఫారంలో XFA డేటా కూడా ఉంది, దాన్ని చదవడానికి PdfCraftలో ఇంకా మద్దతు లేదు. మీరు దీని ఫీల్డ్‌లను నింపవచ్చు, కానీ Acrobat బదులుగా XFA విలువలను చూపించవచ్చు.
 	This document contains {n} interactive form fields.	ఈ పత్రంలో {n} ఇంటరాక్టివ్ ఫారం ఫీల్డ్‌లు ఉన్నాయి.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	ఈ ఫైల్ పాడైంది, దాన్ని సరిచేయడం జరిగింది. సేవ్ చేస్తే సరిచేసిన వెర్షన్ ఉంచబడుతుంది.
 	Dismiss	మూసివేయి

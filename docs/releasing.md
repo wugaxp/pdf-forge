@@ -1,44 +1,55 @@
-# Releasing PdfCraft
+# Releasing PDF Forge
 
-Every push to the `release` branch runs `.github/workflows/release.yml`. It builds installers for
-macOS, Windows, Linux, FreeBSD and the web, signs the ones it has certificates for, and creates or
-updates a **draft** GitHub Release named `PdfCraft v<version>`. Nobody sees a draft until a
-maintainer publishes it.
+`.github/workflows/release.yml` builds installers for macOS, Windows, Linux, FreeBSD and the web,
+signs the ones it has certificates for, and creates or updates a **draft** GitHub Release named
+`PDF Forge v<version>`. Nobody sees a draft until a maintainer publishes it.
 
-The pipeline was ported from PhotoCraft's. User-facing names say **PdfCraft**; files, binaries and
-ids stay lowercase (`pdfcraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.pdfcraft`).
+This is a personal fork of PdfCraft, so the upstream org's pipeline is used with two changes:
+runs are dispatched **by hand from `main`** (the shared workflow requires the suite's Apple/Windows/
+Azure signing secrets on the `release` branch, and a personal fork has none), and no signing secrets
+are configured, so every artefact is unsigned until they are added to a `release` environment and to
+`release.yml`. See [Signing and analysis](#signing-and-analysis-in-this-fork) below.
+
+The fork's user-facing brand is **PDF Forge** (README, About and home screen, the AppStream
+`<name>`, the code-signing description). The packages keep upstream's product name and identifiers
+so upgrades, file associations and shortcuts keep working: the binaries and files
+(`pdfcraft-<version>-<platform>-<arch>.<ext>`, `pdfcraft.exe`, `PdfCraft.lnk`), the app id
+`ai.storyteller.pdfcraft`, the MSI's `PdfCraft` product name and its `Edit with PdfCraft` /
+`Create PDF with PdfCraft…` shell labels, and the `PdfCraftData\` data folder. The MSI's publisher
+is `wugaxp`.
 
 ## Cutting a release
 
 1. **Bump the version** on `main`. It lives only in `[workspace.package] version` in the root
-   `Cargo.toml`:
+   `Cargo.toml`, and the `version` of every workspace path dependency beside it:
 
    ```sh
    cargo xtask version                 # prints the current version
+   cargo xtask version check           # its path-dependency pins agree with it
    cargo xtask version set 0.3.0       # or 0.3.0-rc.1; updates Cargo.toml and Cargo.lock
    ```
 
-   Commit the change through the normal review flow (see the `Release: PdfCraft v0.2.1` PR).
-2. **Merge `main` into `release`** (or fast-forward it) and push. The workflow starts by itself.
+   Commit the change through the normal review flow.
+2. **Dispatch the Release workflow** (*Actions ▸ Release ▸ Run workflow* on `main`, or
+   `gh workflow run release.yml --ref main`) with an empty `version` input, so the run uses
+   `Cargo.toml`.
 3. **Wait for the draft.** When every job has finished (notarization is the slow part), the
-   Releases page has a draft `PdfCraft v0.3.0` targeting the pushed commit, with every artifact
+   Releases page has a draft `PDF Forge v0.3.0` targeting the dispatched commit, with every artifact
    and `SHA256SUMS.txt`. The notes are generated from the merged PRs.
 4. **Check it.** Download an installer or two and read the job summaries. A `::warning::` there
-   means a signing secret was missing and that artifact is unsigned.
+   means a signing secret was missing and that artifact is unsigned (all of them are, until the
+   secrets exist).
 5. **Publish** the draft in the GitHub UI. Publishing creates the `v0.3.0` tag. Versions with a
    pre-release suffix (`-rc.1`) are marked as pre-releases.
 
-Pushing to `release` again before you publish rebuilds the same draft and replaces its assets.
+Dispatching again before you publish rebuilds the same draft and replaces its assets.
 Once the draft is published, the workflow refuses to touch that version again, so bump it first.
 
-**Test runs:** *Actions ▸ Release ▸ Run workflow* runs the whole pipeline by hand. The optional
-`version` input (such as `0.3.0-rc.1`) overrides `Cargo.toml` for that run only; each job applies it
-with `cargo xtask version set` before building, so the binaries report it too. The signing jobs
-(macOS, Windows) and the draft-release job use the `release` environment, so pick the `release`
-branch in the dialog for a full run. On any other branch the same dispatch is a **dry run**: the
-Linux, Flatpak, FreeBSD and web jobs build and check everything, the signing jobs are refused by the
-environment's branch rule, and the draft-release job (which needs them) is skipped, so nothing is
-published (`gh workflow run release.yml --ref <branch>`).
+**Test runs:** the optional `version` input (such as `0.3.0-rc.1`) overrides `Cargo.toml` for that
+run only; each job applies it with `cargo xtask version set` before building, so the binaries report
+it too. Dispatching from `main` is a dry run in one respect only: the artefacts are unsigned and the
+draft is not published until you publish it. Dispatching from the `release` branch makes the shared
+workflow *require* the signing secrets and fail without them.
 
 ## What gets built
 
@@ -219,6 +230,19 @@ unsigned and the run shows a warning.
 
 `GITHUB_TOKEN` creates the release; only the final job gets `contents: write`.
 
+## Signing and analysis in this fork
+
+This fork configures **no signing secrets**: a personal fork has no Apple, Windows or Azure signing
+identity, so every artefact is unsigned. To sign, create the `release` environment, add the secrets
+from the table above, and list them in `release.yml`'s `secrets:` block (the shared workflow's
+signing steps pick them up, and the `release` branch becomes usable).
+
+**SonarCloud** is disabled in this fork. The shared `sonarcloud.yml` workflow pins
+`sonar.organization=storytold`, so it can never analyse this fork's project, and `secrets: inherit`
+would hand every repository secret to another organisation's workflow. `sonar-project.properties`
+names the fork's own project (`wugaxp_pdf-forge`, organisation `wugaxp`). To analyse again, run a
+scanner workflow of your own with a `SONAR_TOKEN` for that organisation against those properties.
+
 ## Checks
 
 `.github/workflows/packaging-lint.yml` runs on changes to `packaging/` and the workflows: actionlint, shellcheck,
@@ -264,5 +288,6 @@ a match of the `CobaltStrikeBeacon` family rule.
    current one does not. Don't alter PdfCraft's binaries to change a scanner's result. That changes
    nothing about the software.
 7. **Report.** To the scanner, send the file's SHA-256, the release URL, the rule name and revision,
-   and the matched identifiers and offsets. Report PdfCraft problems at
-   <https://github.com/storytold/pdfcraft/issues> with the same facts.
+   and the matched identifiers and offsets. Report problems in this fork at
+   <https://github.com/wugaxp/pdf-forge/issues>, and problems inherited from upstream at
+   <https://github.com/storytold/pdfcraft/issues>, with the same facts.

@@ -64,6 +64,13 @@ pub enum RedactError {
         "the document's tags can't be cleaned completely (an element written in place, or a structure tree too large or too deep to follow); the operation was refused"
     )]
     Tags,
+    /// A content stream the redaction rewrote is still named by an object that does not draw
+    /// it (an `/MCR` that could not be repointed, a name tree, a catalog key): the removed text
+    /// would reach the saved file through it. Nothing was changed.
+    #[error(
+        "an object still names a content stream the redaction rewrote without drawing it, so the removed text would stay in the saved file; the operation was refused"
+    )]
+    ReplacedStreamReachable,
     /// Objects written in place nest deeper than hidden information is followed, so its removal
     /// could not be shown complete.
     #[error("the document's objects nest too deeply to remove hidden information completely; the operation was refused")]
@@ -410,10 +417,12 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
     let mut doomed_fields: Vec<ObjRef> = Vec::new();
     // The original image and form XObjects the rewrite drops or replaces, on any page.
     let mut doomed_xobjects: Vec<ObjRef> = Vec::new();
+    // The content streams the rewrite replaced, on any page: nothing may keep one reachable.
+    let mut replaced_content: HashSet<ObjRef> = HashSet::new();
     let mut retired_properties = Vec::new();
-    let widget_owner: HashMap<ObjRef, ObjRef> =
-        pdfcraft_forms::fields(doc).into_iter().flat_map(|f| f.widgets.iter().map(|w| (w.obj, f.obj)).collect::<Vec<_>>()).collect();
-    let field_objects: HashSet<ObjRef> = pdfcraft_forms::fields(doc).into_iter().map(|f| f.obj).collect();
+    let fields = pdfcraft_forms::fields(doc);
+    let widget_owner: HashMap<ObjRef, ObjRef> = fields.iter().flat_map(|f| f.widgets.iter().map(|w| (w.obj, f.obj))).collect();
+    let field_objects: HashSet<ObjRef> = fields.iter().map(|f| f.obj).collect();
     let listed_before = listed_annotations(doc);
     let mut removed_everywhere: HashSet<ObjRef> = HashSet::new();
     // Page objects only; their dictionaries are read once per page below. Rebuilding the page
@@ -452,10 +461,18 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
         }
         doomed_xobjects.extend_from_slice(&out.doomed);
         retired_properties.extend(out.retired_properties);
+        // The rewritten content of each stream — never re-decoded, it was just written — and the
+        // old streams it replaces. Those are swept like a replaced form's stream: nothing else
+        // may keep one reachable, its bytes still hold what was removed.
+        let mut new_content: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(list.len());
+        let mut replaced_streams: Vec<(ObjRef, ObjRef)> = Vec::new();
         let mut new_list = list.clone();
         let mut changed = false;
         for (i, new) in out.streams.into_iter().enumerate() {
-            let Some(bytes) = new else { continue };
+            let Some(bytes) = new else {
+                new_content.push(std::borrow::Cow::Borrowed(data[i].as_slice()));
+                continue;
+            };
             let mut dict = match &*doc.resolve(&list[i]) {
                 Object::Stream(s) => s.dict.clone(),
                 _ => Dict::new(),
@@ -466,7 +483,14 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
             // as plain drawn content but is no longer editable.
             dict.remove(b"PCAdded");
             // A new object: the original may be shared with other pages.
-            new_list[i] = Object::Ref(doc.add(Object::Stream(Stream::flate(dict, &bytes))));
+            let replacement = doc.add(Object::Stream(Stream::flate(dict, &bytes)));
+            if let Some(original) = list[i].as_ref() {
+                doomed_xobjects.push(original);
+                replaced_content.insert(original);
+                replaced_streams.push((original, replacement));
+            }
+            new_list[i] = Object::Ref(replacement);
+            new_content.push(std::borrow::Cow::Owned(bytes));
             changed = true;
         }
         if changed || !out.xobjects.is_empty() || !out.replaced.is_empty() {
@@ -475,48 +499,31 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
                 let mut xo = res.get(b"XObject").and_then(|x| doc.resolve(x).as_dict().cloned()).unwrap_or_default();
                 // A full save keeps whatever is still referenced: unlink the originals this page no
                 // longer draws so the removed image or form bytes cannot survive in the saved file.
-                let page_content: Vec<Vec<u8>> = new_list
-                    .iter()
-                    .map(|o| match &*doc.resolve(o) {
-                        Object::Stream(s) => s.decoded().unwrap_or_default(),
-                        _ => Vec::new(),
-                    })
-                    .collect();
-                interp::prune(&mut xo, &out.replaced, &page_content);
+                interp::prune(&mut xo, &out.replaced, &new_content);
                 for (n, r) in &out.xobjects {
                     xo.set(n.clone(), Object::Ref(*r));
                 }
                 res.set(b"XObject".to_vec(), Object::Dict(xo));
             }
-            let (_, cleaned_data) = page_streams(
-                doc,
-                &{
-                    let mut cleaned_page = page_dict.clone();
-                    cleaned_page.set(b"Contents".to_vec(), Object::Array(new_list.clone()));
-                    cleaned_page
-                },
-                pi,
-            )?;
-            retired_properties.extend(interp::prune_properties(doc, &mut res, &cleaned_data)?);
+            retired_properties.extend(interp::prune_properties(doc, &mut res, &new_content)?);
             doc.update_dict(page_obj, |d| {
                 d.set(b"Contents".to_vec(), Object::Array(new_list));
                 d.set(b"Resources".to_vec(), Object::Dict(res));
             })?;
-            // Tags must not keep what the page no longer shows.
-            let after = doc.get(page_obj).as_dict().cloned().unwrap_or_default();
-            let (_, new_data) = page_streams(doc, &after, pi)?;
+            // Tags must not keep what the page no longer shows, and their marked-content
+            // references follow the rewritten streams (as a form's do).
             let (changed_ids, empty_ids) =
-                tags::touched(doc, &resources, pdfcraft_content::Pieces::join(&data).data(), pdfcraft_content::Pieces::join(&new_data).data());
-            report.tags += tags::clean(doc, page_obj, None, &changed_ids, &empty_ids)?;
+                tags::touched(doc, &resources, pdfcraft_content::Pieces::join(&data).data(), pdfcraft_content::Pieces::join(&new_content).data());
+            report.tags += tags::clean(doc, page_obj, tags::Streams::Page(&replaced_streams), &changed_ids, &empty_ids)?;
         }
 
         for (old, new, changed, empty) in out.tag_changes {
-            report.tags += tags::clean(doc, page_obj, Some((old, new)), &changed, &empty)?;
+            report.tags += tags::clean(doc, page_obj, tags::Streams::Form(old, new), &changed, &empty)?;
         }
 
         // 2. Annotations: the marks, and whatever lies under them (with their pop-ups).
         let annots = annots_of(doc, &doc.get(page_obj).as_dict().cloned().unwrap_or_default());
-        let mut removed: Vec<ObjRef> = Vec::new();
+        let mut removed: HashSet<ObjRef> = HashSet::new();
         for a in &annots {
             let Some(r) = a.as_ref() else { continue };
             let obj = doc.get(r);
@@ -524,7 +531,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
             let subtype = d.name(b"Subtype").unwrap_or(b"");
             if subtype == b"Redact" {
                 if page_marks.iter().any(|m| m.obj == r) {
-                    removed.push(r);
+                    removed.insert(r);
                 }
                 continue;
             }
@@ -532,7 +539,7 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
                 continue;
             }
             if rect_of(doc, d.get(b"Rect")).is_some_and(|b| rects.iter().any(|x| pdfcraft_content::overlaps(*x, b, 0.0))) {
-                removed.push(r);
+                removed.insert(r);
                 if subtype == b"Widget" {
                     if let Some(field) = widget_owner.get(&r)
                         && !doomed_fields.contains(field)
@@ -544,104 +551,59 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
                 }
             }
         }
-        // Replies (`/IRT`, ISO 32000-2 §12.5.6.2) to a removed annotation go too, and replies to
-        // those: a reply placed elsewhere would keep its parent — the comment and the QuadPoints
-        // of the redacted words — in the file through its `/IRT` (#2659). Each pass removes at
-        // least one more annotation of this page or stops, so it ends.
-        let replies: Vec<(ObjRef, ObjRef)> = annots
-            .iter()
-            .filter_map(Object::as_ref)
-            .filter_map(|r| {
-                let obj = doc.get(r);
-                let d = obj.as_dict()?;
-                (d.name(b"Subtype") != Some(b"Widget")).then_some(())?;
-                Some((r, d.get(b"IRT").and_then(Object::as_ref)?))
-            })
-            .collect();
-        loop {
-            let before = removed.len();
-            for (r, parent) in &replies {
-                if !removed.contains(r) && removed.contains(parent) {
-                    removed.push(*r);
-                    report.annotations += 1;
-                }
-            }
-            if removed.len() == before {
-                break;
-            }
-        }
+        // Replies and pop-ups of these go too, wherever they are listed (step 2b below, one
+        // propagation over every page): a reply left behind would keep its parent in the file.
         removed_everywhere.extend(removed.iter().copied());
-        // Pop-ups dropped with their parent below count too: a reply on another page may answer one.
-        for a in &annots {
-            let Some(r) = a.as_ref() else { continue };
-            if doc.get(r).as_dict().and_then(|d| d.get(b"Parent")).and_then(Object::as_ref).is_some_and(|p| removed.contains(&p)) {
-                removed_everywhere.insert(r);
-            }
-        }
-        let kept: Vec<Object> = annots
-            .into_iter()
-            .filter(|a| {
-                let Some(r) = a.as_ref() else { return true };
-                if removed.contains(&r) {
-                    return false;
-                }
-                // Pop-ups of removed annotations go too.
-                let obj = doc.get(r);
-                !obj.as_dict().and_then(|d| d.get(b"Parent")).and_then(Object::as_ref).is_some_and(|p| removed.contains(&p))
-            })
-            .collect();
-        doc.update_dict(page_obj, |d| {
-            if kept.is_empty() {
-                d.remove(b"Annots");
-            } else {
-                d.set(b"Annots".to_vec(), Object::Array(kept));
-            }
-        })?;
     }
 
-    // 2b. Replies and pop-ups of a removed annotation can be listed on another page than their
-    // parent: their `/IRT` or `/Parent` would keep the removed comment reachable.
-    loop {
-        let mut grew = false;
-        for p in pdfcraft_model::pages(doc) {
-            let annots = annots_of(doc, &p.dict);
-            let mut kept = Vec::with_capacity(annots.len());
-            for a in &annots {
-                let Some(r) = a.as_ref() else {
-                    kept.push(a.clone());
-                    continue;
-                };
-                let obj = doc.get(r);
-                let Some(d) = obj.as_dict() else {
-                    kept.push(a.clone());
-                    continue;
-                };
-                let is_reply =
-                    d.get(b"IRT").and_then(Object::as_ref).is_some_and(|x| removed_everywhere.contains(&x)) && d.name(b"Subtype") != Some(b"Widget");
-                let is_popup = d.get(b"Parent").and_then(Object::as_ref).is_some_and(|x| removed_everywhere.contains(&x));
-                if removed_everywhere.contains(&r) || is_reply || is_popup {
-                    if removed_everywhere.insert(r) {
-                        grew = true;
-                        if is_reply {
-                            report.annotations += 1;
-                        }
-                    }
-                } else {
-                    kept.push(a.clone());
-                }
+    // 2b. Replies (`/IRT`, ISO 32000-2 §12.5.6.2) to a removed annotation, and pop-ups (or any
+    // kid) of one, can be listed on another page than their parent: their `/IRT` or `/Parent`
+    // would keep the removed comment — and the QuadPoints of the redacted words — in the file.
+    // One index of who answers whom, then a single propagation over it reaches the same set as
+    // re-reading every page's `/Annots` until nothing grows.
+    let mut answers: HashMap<ObjRef, Vec<(ObjRef, bool)>> = HashMap::new();
+    let mut listed: Vec<(ObjRef, Vec<Object>)> = Vec::new();
+    for p in pdfcraft_model::pages(doc) {
+        let annots = annots_of(doc, &p.dict);
+        for a in &annots {
+            let Some(r) = a.as_ref() else { continue };
+            let obj = doc.get(r);
+            let Some(d) = obj.as_dict() else { continue };
+            if d.name(b"Subtype") != Some(b"Widget")
+                && let Some(parent) = d.get(b"IRT").and_then(Object::as_ref)
+            {
+                answers.entry(parent).or_default().push((r, true));
             }
-            if kept.len() != annots.len() {
-                doc.update_dict(p.obj, |d| {
-                    if kept.is_empty() {
-                        d.remove(b"Annots");
-                    } else {
-                        d.set(b"Annots".to_vec(), Object::Array(kept));
-                    }
-                })?;
+            if let Some(parent) = d.get(b"Parent").and_then(Object::as_ref) {
+                answers.entry(parent).or_default().push((r, false));
             }
         }
-        if !grew {
-            break;
+        listed.push((p.obj, annots));
+    }
+    let mut queue: Vec<ObjRef> = removed_everywhere.iter().copied().collect();
+    while let Some(r) = queue.pop() {
+        for &(d, reply) in answers.get(&r).into_iter().flatten() {
+            if removed_everywhere.insert(d) {
+                if reply {
+                    report.annotations += 1;
+                }
+                queue.push(d);
+            }
+        }
+    }
+    for (obj, annots) in listed {
+        let before = annots.len();
+        let kept: Vec<Object> = annots.into_iter().filter(|a| !a.as_ref().is_some_and(|r| removed_everywhere.contains(&r))).collect();
+        if kept.len() != before {
+            // A page whose marks were all it had loses `/Annots` again, and an indirect array
+            // stays the one object the page points to.
+            doc.update_dict(obj, |d| {
+                if kept.is_empty() {
+                    d.remove(b"Annots");
+                } else {
+                    d.set(b"Annots".to_vec(), Object::Array(kept));
+                }
+            })?;
         }
     }
 
@@ -680,6 +642,9 @@ fn apply_to(doc: &mut Document, pages: Option<&[usize]>) -> Result<Report, Redac
     // A removed image or form must not stay reachable through another resource dictionary (an
     // inherited or shared /Resources): a full save keeps whatever is still referenced.
     interp::unlink_doomed(doc, &doomed_xobjects, &retired_properties)?;
+    // Nothing else may name a rewritten content stream without drawing it (an `/MCR` the tags
+    // could not repoint, a name tree, a catalog key): the removed text is still in its bytes.
+    interp::check_replaced_unreachable(doc, &replaced_content)?;
 
     // 5. Verify: nothing readable may remain under a region.
     let mut residue = 0;

@@ -204,8 +204,8 @@ fn drawing_a_signature_creating_an_id_signing_and_trusting() {
     // The snapshot tab says what it is.
     h.get_by_label_contains("You are viewing the signed version of");
     // Closing a clean snapshot closes the tab with no save prompt. The bar's own
-    // Close is addressed from its message, because the tab chrome has a Close button
-    // with the same label.
+    // Close is addressed from its message: the tab chrome's close button is named
+    // for its tab ("Close …"), not just "Close".
     let label = h.get_by_label_contains("You are viewing the signed version of");
     let label_row = label.rect().y_range();
     let mut node = label;

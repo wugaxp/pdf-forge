@@ -421,7 +421,7 @@ fn fresh_name(scope: &mut Scope<'_>, xobjects: &Dict) -> Vec<u8> {
 /// Drop every `replaced` resource name whose `Do` no longer appears in the rewritten `content`,
 /// so a full-rewrite save stops reaching the original image or form it named. A name that some
 /// surviving `Do` still draws (the same image shown again outside a mark) is kept.
-pub(crate) fn prune(xo: &mut Dict, replaced: &[Vec<u8>], content: &[Vec<u8>]) {
+pub(crate) fn prune<C: AsRef<[u8]>>(xo: &mut Dict, replaced: &[Vec<u8>], content: &[C]) {
     if replaced.is_empty() {
         return;
     }
@@ -435,33 +435,52 @@ pub(crate) fn prune(xo: &mut Dict, replaced: &[Vec<u8>], content: &[Vec<u8>]) {
     }
 }
 
-/// Whether `content` draws the XObject `name` of the resource dictionary `xo`: directly, or
-/// through a form that has no /Resources of its own (such a form draws through its caller's).
-/// `None` when that cannot be told (a form that will not decode, or nesting past the limit).
-fn content_draws(doc: &Document, content: &[Vec<u8>], xo: &Dict, name: &[u8], depth: usize, seen: &mut HashSet<ObjRef>) -> Option<bool> {
-    let joined = Pieces::join(content);
-    let ops = joined.parse().ops;
-    for op in ops.iter().filter(|op| op.is("Do")) {
-        let Some(n) = op.last_name() else { continue };
-        if n == name {
-            return Some(true);
+/// What a content scope draws through one resource dictionary: every XObject name it draws,
+/// directly or through a form that has no /Resources of its own (such a form draws through its
+/// caller's). `partial` is true when some form in the graph could not be read: a name absent
+/// from `names` may still be drawn then, so entries it could clear must stay.
+#[derive(Default)]
+struct Draws {
+    names: HashSet<Vec<u8>>,
+    partial: bool,
+}
+
+/// Everything `content` draws through `xo` ([`Draws`]): one walk of the form graph, however
+/// many names are asked about and however many contents draw through the same dictionary.
+fn content_draws<C: AsRef<[u8]>>(doc: &Document, content: &[C], xo: &Dict) -> Draws {
+    let mut out = Draws::default();
+    let mut pending: Vec<ObjRef> = Vec::new();
+    let mut seen: HashSet<ObjRef> = HashSet::new();
+    let scan = |data: &[u8], out: &mut Draws, pending: &mut Vec<ObjRef>, seen: &mut HashSet<ObjRef>| {
+        for op in pdfcraft_content::parse(data).ops.iter().filter(|op| op.is("Do")) {
+            let Some(n) = op.last_name() else { continue };
+            out.names.insert(n.to_vec());
+            if let Some(r) = xo.get(n).and_then(Object::as_ref)
+                && seen.insert(r)
+            {
+                pending.push(r);
+            }
         }
-        let Some(r) = xo.get(n).and_then(Object::as_ref) else { continue };
+    };
+    for c in content {
+        scan(c.as_ref(), &mut out, &mut pending, &mut seen);
+    }
+    while let Some(r) = pending.pop() {
+        if seen.len() > 1_000_000 {
+            out.partial = true;
+            break;
+        }
         let obj = doc.get(r);
         let Object::Stream(s) = &*obj else { continue };
-        if s.dict.name(b"Subtype") != Some(b"Form") || s.dict.contains(b"Resources") || !seen.insert(r) {
+        if s.dict.name(b"Subtype") != Some(b"Form") || s.dict.contains(b"Resources") {
             continue;
         }
-        if depth >= MAX_DEPTH {
-            return None;
-        }
-        let Ok(data) = s.decoded_within(128 << 20) else { return None };
-        match content_draws(doc, std::slice::from_ref(&data), xo, name, depth + 1, seen) {
-            Some(false) => {}
-            other => return other,
+        match s.decoded_within(128 << 20) {
+            Ok(data) => scan(&data, &mut out, &mut pending, &mut seen),
+            Err(_) => out.partial = true,
         }
     }
-    Some(false)
+    out
 }
 
 /// Unlink the XObjects a rewrite dropped or replaced (`doomed`) from every page-tree resource
@@ -525,23 +544,26 @@ pub(crate) fn unlink_doomed(doc: &mut Document, doomed: &[ObjRef], retired_prope
             // A page whose content cannot be read may still draw the name: fail closed.
             contents.push(page_streams(doc, &page, index.get(user).copied().unwrap_or(0))?.1);
         }
+        // One walk of the pages' form graphs, however many names there are.
+        let mut draws = Draws::default();
+        if !names.is_empty() {
+            for content in &contents {
+                let d = content_draws(doc, content, &xo);
+                draws.names.extend(d.names);
+                draws.partial |= d.partial;
+            }
+        }
         let mut pruned = false;
         for n in names {
-            let mut drawn = Some(false);
-            for content in &contents {
-                drawn = content_draws(doc, content, &xo, &n, 0, &mut HashSet::new());
-                if drawn != Some(false) {
-                    break;
-                }
+            if draws.names.contains(&n) {
+                continue;
             }
-            match drawn {
-                Some(true) => {}
-                Some(false) => {
-                    xo.remove(&n);
-                    pruned = true;
-                }
-                None => return Err(RedactError::Residue(1)),
+            // A form that could not be read may still draw the name: fail closed.
+            if draws.partial {
+                return Err(RedactError::Residue(1));
             }
+            xo.remove(&n);
+            pruned = true;
         }
         if pruned {
             res.set(b"XObject".to_vec(), Object::Dict(xo));
@@ -557,6 +579,106 @@ pub(crate) fn unlink_doomed(doc: &mut Document, doomed: &[ObjRef], retired_prope
     unlink_from_forms(doc, &holder_nodes, &doomed, retired_properties)?;
     Ok(())
 }
+
+/// Fail closed when a reachable object still names a stream in `replaced` (one this pass
+/// rewrote) without drawing it. A structure-tree `/MCR` that was not repointed, a name tree, a
+/// catalog key or `/PieceInfo` keeps the removed text in the saved file through the old stream.
+/// A page's `/Contents` draws it (another page may share it, and is not under a mark there), and
+/// a resource dictionary names it entry by entry, as [`unlink_doomed`] leaves those.
+pub(crate) fn check_replaced_unreachable(doc: &Document, replaced: &HashSet<ObjRef>) -> Result<(), RedactError> {
+    if replaced.is_empty() {
+        return Ok(());
+    }
+    // The `/Contents` of every page: they draw the stream, however many pages list it.
+    let mut drawn: HashSet<ObjRef> = HashSet::new();
+    for p in pdfcraft_model::pages(doc) {
+        let Some(c) = p.dict.get(b"Contents") else { continue };
+        match &*doc.resolve(c) {
+            Object::Array(a) => drawn.extend(a.iter().filter_map(Object::as_ref)),
+            _ => drawn.extend(c.as_ref()),
+        }
+    }
+    // What a full save walks — everything reachable from the trailer — is what lands in the
+    // saved file; anything it does not reach it drops. Each object is read once.
+    let mut seen: HashSet<ObjRef> = HashSet::new();
+    let mut queue: Vec<ObjRef> = Vec::new();
+    let trailer = doc.trailer();
+    for key in [&b"Root"[..], b"Info", b"Encrypt"] {
+        queue.extend(trailer.reference(key));
+    }
+    for (key, value) in trailer.iter() {
+        if !trailer_key_rewritten(key) && stale_reference(value, replaced, &drawn, false, false, 0, &mut queue) {
+            return Err(RedactError::ReplacedStreamReachable);
+        }
+    }
+    while let Some(r) = queue.pop() {
+        if !seen.insert(r) {
+            continue;
+        }
+        // A document this large cannot be shown clean here: refuse rather than report success.
+        if seen.len() > 1_000_000 {
+            return Err(RedactError::ReplacedStreamReachable);
+        }
+        let o = doc.get(r);
+        if matches!(*o, Object::Null) {
+            continue;
+        }
+        if stale_reference(&o, replaced, &drawn, false, false, 0, &mut queue) {
+            return Err(RedactError::ReplacedStreamReachable);
+        }
+    }
+    Ok(())
+}
+
+/// Trailer keys a full rewrite generates itself (as `pdfcraft_cos`'s writer does); everything
+/// else is copied, so objects reachable only through them land in the saved file too.
+fn trailer_key_rewritten(key: &[u8]) -> bool {
+    matches!(
+        key,
+        b"Size" | b"Prev" | b"XRefStm" | b"Type" | b"W" | b"Index" | b"Filter" | b"DecodeParms" | b"Length" | b"Root" | b"Info" | b"Encrypt" | b"ID"
+    )
+}
+
+/// Whether `o` holds a reference to one of `replaced` in a position that does not draw it,
+/// queueing every reference it finds for the walk. `entry` marks a resource entry (a value of
+/// an /XObject or /Properties dictionary, which names a stream as it names a form), `resources`
+/// whether this object's own values are such entries. Nesting past [`MAX_STALE_DEPTH`] counts
+/// as a reference that could not be shown clean.
+fn stale_reference(
+    o: &Object,
+    replaced: &HashSet<ObjRef>,
+    drawn: &HashSet<ObjRef>,
+    entry: bool,
+    resources: bool,
+    depth: usize,
+    queue: &mut Vec<ObjRef>,
+) -> bool {
+    if depth > MAX_STALE_DEPTH {
+        return true;
+    }
+    match o {
+        Object::Ref(r) => {
+            if replaced.contains(r) && !entry && !drawn.contains(r) {
+                return true;
+            }
+            queue.push(*r);
+            false
+        }
+        Object::Array(a) => a.iter().any(|x| stale_reference(x, replaced, drawn, entry, resources, depth + 1, queue)),
+        Object::Dict(d) => d
+            .iter()
+            .any(|(k, v)| stale_reference(v, replaced, drawn, resources, matches!(k.as_slice(), b"XObject" | b"Properties"), depth + 1, queue)),
+        Object::Stream(s) => s
+            .dict
+            .iter()
+            .any(|(k, v)| stale_reference(v, replaced, drawn, resources, matches!(k.as_slice(), b"XObject" | b"Properties"), depth + 1, queue)),
+        _ => false,
+    }
+}
+
+/// How deep an object's nesting is followed while looking for a stale reference; deeper is
+/// refused rather than walked.
+const MAX_STALE_DEPTH: usize = 256;
 
 /// Retire only properties removed from a rewritten scope, preserving names still used by any
 /// content sharing this holder. Different pages' streams must never be concatenated together.
@@ -642,14 +764,21 @@ fn unlink_from_forms(doc: &mut Document, holders: &[ObjRef], doomed: &HashSet<Ob
     Ok(())
 }
 
-fn prune_doomed_xobjects(doc: &Document, content: &[Vec<u8>], xo: &mut Dict, doomed_names: &[Vec<u8>]) -> Result<bool, CosError> {
+fn prune_doomed_xobjects<C: AsRef<[u8]>>(doc: &Document, content: &[C], xo: &mut Dict, doomed_names: &[Vec<u8>]) -> Result<bool, CosError> {
+    if doomed_names.is_empty() {
+        return Ok(false);
+    }
+    let draws = content_draws(doc, content, xo);
     let mut pruned = false;
     for name in doomed_names {
-        match content_draws(doc, content, xo, name, 0, &mut HashSet::new()) {
-            Some(true) => {}
-            Some(false) => pruned |= xo.remove(name).is_some(),
-            None => return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect shared form resources".into() }),
+        if draws.names.contains(name) {
+            continue;
         }
+        // A form that could not be read may still draw the name: fail closed.
+        if draws.partial {
+            return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect shared form resources".into() });
+        }
+        pruned |= xo.remove(name).is_some();
     }
     Ok(pruned)
 }
@@ -677,7 +806,7 @@ fn clip_out(rects: &[[f64; 4]], ctm: &Matrix, around: [f64; 4]) -> Option<Vec<Op
     Some(ops)
 }
 
-fn resource_ops(doc: &Document, res: &Dict, content: &[Vec<u8>]) -> Result<Vec<Op>, CosError> {
+fn resource_ops<C: AsRef<[u8]>>(doc: &Document, res: &Dict, content: &[C]) -> Result<Vec<Op>, CosError> {
     let parsed = Pieces::join(content).parse();
     if parsed.skipped > 0 || parsed.ops.len() > 2_000_000 {
         return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect property resources".into() });
@@ -706,7 +835,7 @@ fn resource_ops(doc: &Document, res: &Dict, content: &[Vec<u8>]) -> Result<Vec<O
     Ok(ops)
 }
 
-pub(crate) fn prune_properties(doc: &Document, res: &mut Dict, content: &[Vec<u8>]) -> Result<Vec<Object>, CosError> {
+pub(crate) fn prune_properties<C: AsRef<[u8]>>(doc: &Document, res: &mut Dict, content: &[C]) -> Result<Vec<Object>, CosError> {
     let mut properties = res_dict(doc, res, b"Properties");
     if properties.is_empty() {
         return Ok(Vec::new());
@@ -729,7 +858,7 @@ pub(crate) fn prune_properties(doc: &Document, res: &mut Dict, content: &[Vec<u8
     Ok(retired)
 }
 
-fn prune_form_resources(doc: &Document, res: &mut Dict, content: &[Vec<u8>]) -> Result<(), CosError> {
+fn prune_form_resources<C: AsRef<[u8]>>(doc: &Document, res: &mut Dict, content: &[C]) -> Result<(), CosError> {
     let ops = resource_ops(doc, res, content)?;
     let mut xo = res_dict(doc, res, b"XObject");
     let names: Vec<Vec<u8>> = xo.iter().map(|(n, _)| n.to_vec()).collect();

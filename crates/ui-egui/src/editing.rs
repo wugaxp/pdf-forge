@@ -46,7 +46,14 @@ fn new_text_typed(v: &crate::DocView) -> bool {
 impl PdfCraftApp {
     /// Apply an edit to the active document. Returns `true` on success; failures are shown.
     pub fn apply_edit(&mut self, edit: Edit) -> bool {
-        let Some((i, id)) = self.active_ids() else { return false };
+        let Some((_, id)) = self.active_ids() else { return false };
+        self.apply_edit_in(id, edit)
+    }
+
+    /// Apply an edit to document `id`, whose tab need not be the active one (a background job
+    /// marks up the document it ran on). Returns `true` on success; failures are shown.
+    pub fn apply_edit_in(&mut self, id: pdfcraft_engine::DocId, edit: Edit) -> bool {
+        let Some(i) = self.views.iter().position(|v| v.id == id) else { return false };
         let label = edit.label();
         let (form_before, page_count_before, had_xfa) = if let Some(d) = self.session.get(id) {
             (Some(std::sync::Arc::clone(&d.form)), d.info.pages.len(), d.xfa.is_some())

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// Public locations for the fork and its upstream. The fork does not carry the
 /// upstream project's community handles or marks.
 pub const APP: &str = "pdf-forge";
-pub const GITHUB: &str = "https://github.com/wug_astargit/pdf-forge";
+pub const GITHUB: &str = "https://github.com/wugaxp/pdf-forge";
 pub const UPSTREAM: &str = "https://github.com/storytold/pdfcraft";
 
 /// A link and the registry command that opens it.
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn urls_are_https_and_registered() {
-        assert_eq!(super::GITHUB, "https://github.com/wug_astargit/pdf-forge");
+        assert_eq!(super::GITHUB, "https://github.com/wugaxp/pdf-forge");
         assert_eq!(super::UPSTREAM, "https://github.com/storytold/pdfcraft");
         for l in super::LINKS {
             assert!(l.url.starts_with("https://"), "{}", l.url);

@@ -75,7 +75,6 @@
 	Side panels	측면 패널
 	Enable Acrobat JavaScript	Acrobat JavaScript 사용
 	OK	확인
-	Join our Discord	Discord 참여하기
 	Close	닫기
 	Next / previous match	다음 / 이전 일치 항목
 	Copy selected text	선택한 텍스트 복사
@@ -143,10 +142,8 @@
 	Next page	다음 페이지
 	Previous page	이전 페이지
 	Current page — type a page number or label (such as iv) and press Enter	현재 페이지 — 페이지 번호나 레이블(예: iv)을 입력한 후 Enter 키를 누르세요
-	Welcome to PdfCraft	PdfCraft에 오신 것을 환영합니다
+	Welcome to PDF Forge	PDF Forge에 오신 것을 환영합니다
 	An open-source PDF workbench — local, private, and scriptable.	오픈소스 PDF 워크벤치 — 로컬에서 작동하고, 프라이버시를 지키며, 스크립트를 지원합니다.
-	Join the ArtCraft community	ArtCraft 커뮤니티 참여
-	Get help, share feedback and follow development on Discord.	Discord에서 도움을 받고, 피드백을 공유하고, 개발 현황을 팔로우하세요.
 	Recommended tools	추천 도구
 	Use now	지금 사용
 	Open file	파일 열기
@@ -291,12 +288,9 @@
 	Split document…	문서 분할…
 	Number pages…	페이지 번호 매기기…
 	Keyboard shortcuts	키보드 단축키
-	Join the ArtCraft Discord	ArtCraft Discord 참여하기
-	PdfCraft web page	PdfCraft 웹 페이지
-	PdfCraft on GitHub	GitHub의 PdfCraft
-	ArtCraft website	ArtCraft 웹사이트
+	PDF Forge on GitHub	GitHub의 PDF Forge
 	Check for updates…	업데이트 확인…
-	About PdfCraft	PdfCraft 정보
+	About PDF Forge	PDF Forge 정보
 	Export a PDF	PDF 내보내기
 	Export to	내보내기 형식
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -751,9 +745,9 @@
 	Check for updates	업데이트 확인
 	No check has run yet.	아직 확인이 실행되지 않았습니다.
 	Checking for a newer version…	새 버전이 있는지 확인하는 중…
-	PdfCraft {v} is available.	PdfCraft {v}을(를) 사용할 수 있습니다.
+	PDF Forge {v} is available.	PDF Forge {v}을(를) 사용할 수 있습니다.
 	You have version {c}. Download the new version from its release page.	현재 버전은 {c}입니다. 릴리스 페이지에서 새 버전을 다운로드하세요.
-	PdfCraft {c} is up to date.	PdfCraft {c}은(는) 최신 버전입니다.
+	PDF Forge {c} is up to date.	PDF Forge {c}은(는) 최신 버전입니다.
 	Couldn't check for updates: {e}	업데이트를 확인할 수 없습니다: {e}
 	You have version {c}. All releases are listed at {page}.	현재 버전은 {c}입니다. 모든 릴리스는 {page}에 표시됩니다.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	GitHub에 최신 릴리스를 요청합니다. 어떤 것도 자동으로 다운로드하거나 설치하지 않습니다.
@@ -1379,7 +1373,6 @@
 	Discard	버리기
 	Version {v}	버전 {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	클린룸 방식으로 개발된 Rust 기반 오픈 소스 PDF 응용 프로그램입니다. MIT OR Apache-2.0.
-	Part of	소속
 	Summarize Options	요약 옵션
 	Choose a layout:	레이아웃 선택:
 	Comments only	주석만
@@ -1757,7 +1750,6 @@
 	At least one signature has problems.	하나 이상의 서명에 문제가 있습니다.
 	This document is secured. Some changes are restricted by its security settings.	이 문서는 보호되어 있습니다. 일부 변경은 보안 설정에 의해 제한됩니다.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	동적 XFA 양식으로, PdfCraft가 아직 표시할 수 없습니다. 지금 보이는 것은 파일의 자리 표시 페이지입니다.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	이 양식에는 PdfCraft가 아직 읽지 못하는 XFA 데이터도 들어 있습니다. 필드는 채울 수 있지만 Acrobat이 대신 XFA 값을 표시할 수 있습니다.
 	This document contains {n} interactive form fields.	이 문서에는 대화형 양식 필드 {n}개가 들어 있습니다.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	이 파일은 손상되었다가 복구되었습니다. 저장하면 복구된 버전이 유지됩니다.
 	Dismiss	닫기

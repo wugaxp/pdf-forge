@@ -96,7 +96,6 @@
 	Side panels	پانێڵە لاوەکییەکان
 	Enable Acrobat JavaScript	چالاککردنی Acrobat JavaScript
 	OK	باشە
-	Join our Discord	بەشداریکردن لە Discordی ئێمە
 	Close	داخستن
 	Next / previous match	گونجاوی داهاتوو / پێشوو
 	Copy selected text	کۆپیکردنی دەقی هەڵبژێردراو
@@ -165,10 +164,8 @@
 	Previous page	پەڕەی پێشوو
 	Current page — type a page number or label (such as iv) and press Enter	پەڕەی ئێستا — ژمارەی پەڕەیەک یان نیشانەکەی بنووسە (وەک iv) و Enter دابگرە
 	Zoom — type a percentage and press Enter	زووم — ڕێژەیەکی سەدی بنووسە و Enter دابگرە
-	Welcome to PdfCraft	بەخێربێیت بۆ PdfCraft
+	Welcome to PDF Forge	بەخێربێیت بۆ PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	مێزێکی کاری سەرچاوەکراوە بۆ PDF — ناوخۆیی، تایبەت و بەرنامەڕێژکراو.
-	Join the ArtCraft community	بەشداریکردن لە کۆمەڵگەی ArtCraft
-	Get help, share feedback and follow development on Discord.	یارمەتی وەربگرە، بۆچوونەکانت بڵاو بکەرەوە و بەدوای پەرەپێداندا بکەوە لە Discord.
 	Recommended tools	ئامرازی پێشنیارکراو
 	Use now	ئێستا بەکاری بهێنە
 	Open file	کردنەوەی فایل
@@ -313,12 +310,9 @@
 	Split document…	دابەشکردنی بەڵگەنامە…
 	Number pages…	ژمارەدان بە پەڕەکان…
 	Keyboard shortcuts	کورتەڕێگاکانی تەختەکلیل
-	Join the ArtCraft Discord	بەشداریکردن لە Discordی ArtCraft
-	PdfCraft web page	لاپەڕەی وێبی PdfCraft
-	PdfCraft on GitHub	PdfCraft لە GitHub
-	ArtCraft website	ماڵپەڕی ArtCraft
+	PDF Forge on GitHub	PDF Forge لە GitHub
 	Check for updates…	پشکنین بۆ نوێکردنەوەکان…
-	About PdfCraft	دەربارەی PdfCraft
+	About PDF Forge	دەربارەی PDF Forge
 	Export a PDF	هەناردەکردنی PDFێک
 	Export to	هەناردەکردن بۆ
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -778,9 +772,9 @@
 	Check for updates	پشکنین بۆ نوێکردنەوەکان
 	No check has run yet.	هێشتا هیچ پشکنینێک نەکراوە.
 	Checking for a newer version…	پشکنین بۆ وەشانێکی نوێتر…
-	PdfCraft {v} is available.	PdfCraft {v} بەردەستە.
+	PDF Forge {v} is available.	PDF Forge {v} بەردەستە.
 	You have version {c}. Download the new version from its release page.	وەشانی {c} هەیە. وەشانە نوێیەکە لە پەڕەی وەشانەکەیەوە دابگرە.
-	PdfCraft {c} is up to date.	PdfCraft {c} نوێکراوەتەوە.
+	PDF Forge {c} is up to date.	PDF Forge {c} نوێکراوەتەوە.
 	Couldn't check for updates: {e}	پشکنین بۆ نوێکردنەوە نەکرا: {e}
 	You have version {c}. All releases are listed at {page}.	وەشانی {c} هەیە. هەموو وەشانەکان لە {page} پێڕست کراون.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	لە GitHub دەپرسێت بۆ نوێترین وەشان. هیچ شتێک بە شێوەی خۆکار داگیر ناکرێت یان دادەمەزرێنرێت.
@@ -1415,7 +1409,6 @@
 	Discard	فڕێدان
 	Version {v}	وەشان {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	بەرنامەیەکی PDF ی سەرچاوە-کراوە کە بە Rust نووسراوە و بە شێوازی ژووری پاک دروستکراوە. MIT OR Apache-2.0.
-	Part of	بەشێک لە
 	Summarize Options	هەڵبژاردەکانی کورتکردنەوە
 	Choose a layout:	شێوازێک هەڵبژێرە:
 	Comments only	تەنیا لێدوانەکان
@@ -1799,7 +1792,6 @@
 	At least one signature has problems.	لانیکەم واژوویەک کێشەی هەیە.
 	This document is secured. Some changes are restricted by its security settings.	ئەم بەڵگەنامەیە پارێزراوە. هەندێک گۆڕانکاری بە ڕێکخستنەکانی ئاسایشەکەی سنووردار کراوە.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	ئەمە فۆڕمی داینامیکی XFA یە، کە PdfCraft هێشتا ناتوانێت پیشانی بدات. ئەوەی دەیبینیت پەڕەی جێگرەوەی فایلەکەیە.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	ئەم فۆڕمە هەروەها داتای XFA ی تێدایە، کە PdfCraft هێشتا نایخوێنێتەوە. دەتوانیت خانەکانی پڕ بکەیتەوە، بەڵام Acrobat ڕەنگە بەهاکانی XFA پیشان بدات لە جیاتیان.
 	This document contains {n} interactive form fields.	ئەم بەڵگەنامەیە {n} خانەی فۆڕمی کارلێکی تێدایە.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	ئەم فایلە تێکچووبوو و چاککرایەوە. پاشەکەوتکردن وەشانە چاککراوەکە دەپارێزێت.
 	Dismiss	پشتگوێخستن

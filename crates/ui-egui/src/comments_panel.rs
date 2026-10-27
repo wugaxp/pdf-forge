@@ -110,7 +110,193 @@ fn any_contains<'a>(fields: impl IntoIterator<Item = &'a str>, q: &str) -> bool 
     fields.into_iter().any(|s| pdfcraft_render::text::fold_case(s).contains(&q))
 }
 
+/// The Comments panel's rows: which comments are cards, in what order, and what each card's
+/// thread holds. Built when the document or the panel's filters change and kept in the view:
+/// deriving them (and copying their strings) again on every frame is what a large comment list
+/// cost.
+#[derive(Debug)]
+pub(crate) struct Rows {
+    /// What these rows were built from.
+    key: Key,
+    /// Cards in display order.
+    rows: Vec<Row>,
+    /// Comments per page (roots, before filtering), for the page group headers.
+    page_counts: HashMap<usize, usize>,
+    /// What the filter menu offers to hide.
+    menu: Menu,
+}
+
+/// The document and filters a [`Rows`] was built from.
+#[derive(Debug, PartialEq)]
+struct Key {
+    generation: u64,
+    sort: SortBy,
+    search: Option<String>,
+    hidden_types: Vec<String>,
+    hidden_authors: Vec<String>,
+    hidden_statuses: Vec<String>,
+    hidden_colors: Vec<String>,
+    hidden_checks: Vec<String>,
+}
+
+/// One card's row.
+#[derive(Debug)]
+struct Row {
+    /// The comment, as an index into `info.annotations`.
+    at: usize,
+    /// The group header above the row (the sort's key), where the sort groups at all.
+    group: Option<String>,
+    thread: Thread,
+}
+
+/// What a card shows of its thread.
+#[derive(Debug)]
+struct Thread {
+    /// The replies under the card: those with no status or checkmark of their own.
+    replies: Vec<usize>,
+    /// The thread's status, as the latest status reply set it (`None` when it has none).
+    status: Option<String>,
+    /// The latest checkmark in the thread says "Marked".
+    marked: bool,
+}
+
+/// What the filter menu offers to hide.
+#[derive(Debug, Default)]
+struct Menu {
+    types: Vec<String>,
+    authors: Vec<String>,
+    colors: Vec<(String, Option<[f32; 3]>)>,
+}
+
+impl Rows {
+    /// The panel's rows for `info`, kept in `view` until its document or the filters change.
+    fn of(info: &DocInfo, view: &mut DocView, generation: u64) -> std::sync::Arc<Rows> {
+        if let Some(rows) = view.comments.rows.as_ref().filter(|rows| rows.current(&view.comments, generation)) {
+            return rows.clone();
+        }
+        let rows = std::sync::Arc::new(Rows::build(info, &view.comments, generation));
+        view.comments.rows = Some(rows.clone());
+        rows
+    }
+
+    /// Whether these rows still describe the panel's document and filters. The filter state is
+    /// compared as it stands rather than copied into a key: comparing costs nothing.
+    fn current(&self, cv: &crate::comments::CommentView, generation: u64) -> bool {
+        self.key.generation == generation
+            && self.key.sort == cv.sort
+            && self.key.search == cv.search
+            && self.key.hidden_types == cv.hidden_types
+            && self.key.hidden_authors == cv.hidden_authors
+            && self.key.hidden_statuses == cv.hidden_statuses
+            && self.key.hidden_colors == cv.hidden_colors
+            && self.key.hidden_checks == cv.hidden_checks
+    }
+
+    fn build(info: &DocInfo, cv: &crate::comments::CommentView, generation: u64) -> Rows {
+        // Replies find their parent by reference (`/NM` need not be unique) and keep source order.
+        // A reply at any depth joins the thread of the comment it starts from, as comment_list lists
+        // it. A status or checkmark stays with the annotation it was set on (its `/IRT` names it,
+        // ISO 32000-2 §12.5.6.2): one set on a reply, at any depth, is that reply's and not the
+        // comment's, so the card's badge and checkmark leave it out (comment_list reports it on the
+        // reply). Page badges count roots before filtering.
+        let mut replies: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        let mut page_counts: HashMap<usize, usize> = HashMap::new();
+        let tops = pdfcraft_render::thread_tops(&info.annotations);
+        for (i, a) in info.annotations.iter().enumerate() {
+            if let Some(parent) = a.parent {
+                let key = if a.state.is_none() { tops.get(&(a.page, a.index)).copied().unwrap_or(parent) } else { parent };
+                replies.entry(key).or_default().push(i);
+            } else if a.is_comment() {
+                let count = page_counts.entry(a.page).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        let thread_of = |a: &Annotation| -> &[usize] { replies.get(&(a.page, a.index)).map(Vec::as_slice).unwrap_or(&[]) };
+        let query = cv.search.as_deref().filter(|q| !q.trim().is_empty());
+        let mut rows: Vec<Row> = Vec::new();
+        for (i, a) in info.annotations.iter().enumerate() {
+            if !a.is_comment() {
+                continue;
+            }
+            let thread = thread_of(a);
+            let marked = thread
+                .iter()
+                .rev()
+                .find(|r| info.annotations[**r].is_mark())
+                .is_some_and(|r| info.annotations[*r].state.as_deref() == Some("Marked"));
+            let status = thread.iter().rev().filter(|r| !info.annotations[**r].is_mark()).find_map(|r| info.annotations[*r].state.clone());
+            if !query.is_none_or(|q| matches(a, q) || thread.iter().any(|&r| matches(&info.annotations[r], q))) {
+                continue;
+            }
+            if cv.hidden_types.iter().any(|t| t == kind_label(a)) {
+                continue;
+            }
+            if cv.hidden_authors.iter().any(|h| h == a.author.as_deref().unwrap_or_default()) {
+                continue;
+            }
+            if cv.hidden_statuses.iter().any(|s| s == status.as_deref().unwrap_or("None")) {
+                continue;
+            }
+            if !cv.hidden_colors.is_empty() && cv.hidden_colors.contains(&color_key(a)) {
+                continue;
+            }
+            if cv.hidden_checks.iter().any(|c| c == check_label(marked)) {
+                continue;
+            }
+            let shown: Vec<usize> = thread.iter().copied().filter(|&r| info.annotations[r].state.is_none()).collect();
+            rows.push(Row { at: i, group: None, thread: Thread { replies: shown, status, marked } });
+        }
+        let sort = cv.sort;
+        match sort {
+            SortBy::Page => {}
+            SortBy::Author => rows.sort_by_cached_key(|r| info.annotations[r.at].author.clone().unwrap_or_default().to_lowercase()),
+            SortBy::Date => rows.sort_by(|x, y| info.annotations[y.at].modified.cmp(&info.annotations[x.at].modified)),
+            SortBy::Type => rows.sort_by_cached_key(|r| kind_label(&info.annotations[r.at]).to_string()),
+            SortBy::Color => rows.sort_by_cached_key(|r| color_key(&info.annotations[r.at])),
+        }
+        // Group headers follow the sort key (none when sorted by date; the page sort draws page
+        // headers from `page_counts` instead).
+        for row in &mut rows {
+            let a = &info.annotations[row.at];
+            row.group = match sort {
+                SortBy::Page | SortBy::Date => None,
+                SortBy::Author => Some(a.author.clone().unwrap_or_else(|| "Unknown author".into())),
+                SortBy::Type => Some(kind_label(a).to_string()),
+                SortBy::Color => Some(if a.color.is_some() { format!("#{}", color_key(a)) } else { "No colour".into() }),
+            };
+        }
+        let mut menu = Menu::default();
+        for a in info.annotations.iter().filter(|a| a.is_comment()) {
+            menu.types.push(kind_label(a).to_string());
+            menu.authors.push(a.author.clone().unwrap_or_default());
+            menu.colors.push((color_key(a), a.color));
+        }
+        menu.types.sort();
+        menu.types.dedup();
+        menu.authors.sort();
+        menu.authors.dedup();
+        menu.colors.sort_by(|a, b| a.0.cmp(&b.0));
+        menu.colors.dedup_by(|a, b| a.0 == b.0);
+        Rows {
+            key: Key {
+                generation,
+                sort,
+                search: cv.search.clone(),
+                hidden_types: cv.hidden_types.clone(),
+                hidden_authors: cv.hidden_authors.clone(),
+                hidden_statuses: cv.hidden_statuses.clone(),
+                hidden_colors: cv.hidden_colors.clone(),
+                hidden_checks: cv.hidden_checks.clone(),
+            },
+            rows,
+            page_counts,
+            menu,
+        }
+    }
+}
+
 /// Draw the panel body. Returns an edit to apply (posting, replying, deleting…).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn show(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -119,6 +305,7 @@ pub(crate) fn show(
     prefs: &CommentPrefs,
     allowed: bool,
     nav: &mut Option<Nav>,
+    generation: u64,
 ) -> Option<Edit> {
     crate::widgets::begin_dialog(ui);
     let mut edit = None;
@@ -164,65 +351,11 @@ pub(crate) fn show(
         });
         return edit;
     }
-    let query = view.comments.search.clone().filter(|q| !q.trim().is_empty());
-    let mut replies: HashMap<(usize, usize), Vec<&Annotation>> = HashMap::new();
-    let mut page_counts: HashMap<usize, usize> = HashMap::new();
-    // Replies find their parent by reference (`/NM` need not be unique) and keep source order.
-    // A reply at any depth joins the thread of the comment it starts from, as comment_list lists
-    // it. A status or checkmark stays with the annotation it was set on (its `/IRT` names it,
-    // ISO 32000-2 §12.5.6.2): one set on a reply, at any depth, is that reply's and not the
-    // comment's, so the card's badge and checkmark leave it out (comment_list reports it on the
-    // reply). Page badges count roots before filtering.
-    let tops = pdfcraft_render::thread_tops(&info.annotations);
-    for a in &info.annotations {
-        if let Some(parent) = a.parent {
-            let key = if a.state.is_none() { tops.get(&(a.page, a.index)).copied().unwrap_or(parent) } else { parent };
-            replies.entry(key).or_default().push(a);
-        } else if a.is_comment() {
-            let count = page_counts.entry(a.page).or_default();
-            *count = count.saturating_add(1);
-        }
-    }
-    let replies_of = |a: &Annotation| -> &[&Annotation] { replies.get(&(a.page, a.index)).map(Vec::as_slice).unwrap_or(&[]) };
-    let cv = &view.comments;
-    let status_of =
-        |a: &Annotation| replies_of(a).iter().rev().filter(|r| !r.is_mark()).find_map(|r| r.state.clone()).unwrap_or_else(|| "None".into());
-    let mut roots: Vec<&Annotation> = info
-        .annotations
-        .iter()
-        .filter(|a| a.is_comment())
-        .filter(|a| query.as_deref().is_none_or(|q| matches(a, q) || replies_of(a).iter().any(|r| matches(r, q))))
-        .filter(|a| !cv.hidden_types.iter().any(|t| t == kind_label(a)))
-        .filter(|a| !cv.hidden_authors.contains(&a.author.clone().unwrap_or_default()))
-        .filter(|a| !cv.hidden_statuses.contains(&status_of(a)))
-        .filter(|a| !cv.hidden_colors.contains(&color_key(a)))
-        .filter(|a| !cv.hidden_checks.contains(&check_label(is_marked(replies_of(a))).to_string()))
-        .collect();
-    let sort = cv.sort;
-    match sort {
-        SortBy::Page => {}
-        SortBy::Author => roots.sort_by_key(|a| a.author.clone().unwrap_or_default().to_lowercase()),
-        SortBy::Date => roots.sort_by(|a, b| b.modified.cmp(&a.modified)),
-        SortBy::Type => roots.sort_by_key(|a| kind_label(a).to_string()),
-        SortBy::Color => roots.sort_by_key(|a| color_key(a)),
-    }
-    if roots.is_empty() {
+    let rows = Rows::of(info, view, generation);
+    let sort = view.comments.sort;
+    if rows.rows.is_empty() {
         ui.label(egui::RichText::new(tl!("No comments match.")).color(t.text_muted));
     }
-    // Group headers follow the sort key (no headers when sorted by date).
-    // `lang` is copied up front so the closure below never borrows `ui`.
-    let group_of = |a: &Annotation| -> Option<String> {
-        match sort {
-            SortBy::Page => {
-                let label = info.pages.get(a.page).map(|p| p.label.as_str()).unwrap_or("?");
-                Some(crate::i18n::fmt(tl!("Page {label}"), &[("label", label)]))
-            }
-            SortBy::Author => Some(a.author.clone().unwrap_or_else(|| "Unknown author".into())),
-            SortBy::Type => Some(kind_label(a).to_string()),
-            SortBy::Color => Some(if a.color.is_some() { format!("#{}", color_key(a)) } else { "No colour".into() }),
-            SortBy::Date => None,
-        }
-    };
     // A comment selected elsewhere (on the page, or just added) opens its folded group, or the
     // card it should scroll to would not be drawn.
     if view.comments.reveal
@@ -231,21 +364,21 @@ pub(crate) fn show(
         view.comments.collapsed_pages.retain(|&c| c != p);
     }
     let mut page = usize::MAX;
-    let mut group: Option<String> = None;
-    for a in roots {
+    let mut group: Option<&str> = None;
+    for row in &rows.rows {
+        let a = &info.annotations[row.at];
         if sort != SortBy::Page {
-            let g = group_of(a);
-            if g.is_some() && g != group {
+            if row.group.is_some() && row.group.as_deref() != group {
                 ui.add_space(6.0);
-                let title = g.clone().unwrap_or_default();
+                let title = row.group.as_deref().unwrap_or_default();
                 // Catalog labels are already in display order; an author's name is put in it here.
-                let shown = if sort == SortBy::Author && a.author.is_some() { crate::bidi::visual_auto(&title) } else { tl!(&title).into() };
+                let shown = if sort == SortBy::Author && a.author.is_some() { crate::bidi::visual_auto(title) } else { tl!(title).into() };
                 ui.label(egui::RichText::new(shown).font(theme::semibold(12.5)).color(t.text_muted));
-                group = g;
+                group = row.group.as_deref();
             }
         } else if a.page != page {
             page = a.page;
-            let n = page_counts.get(&page).copied().unwrap_or_default();
+            let n = rows.page_counts.get(&page).copied().unwrap_or_default();
             let open = !view.comments.collapsed_pages.contains(&page);
             ui.add_space(6.0);
             let clicked = ui
@@ -278,9 +411,8 @@ pub(crate) fn show(
         if sort == SortBy::Page && view.comments.collapsed_pages.contains(&a.page) {
             continue;
         }
-        let thread = replies_of(a);
         let rotation = info.pages.get(a.page).map_or(0, |p| p.rotation);
-        if let Some(e) = card(ui, t, a, rotation, thread, info, view, prefs, allowed, nav) {
+        if let Some(e) = card(ui, t, a, rotation, &row.thread, info, view, prefs, allowed, nav) {
             edit = Some(e);
         }
     }
@@ -294,7 +426,7 @@ fn card(
     a: &Annotation,
     // The clockwise `/Rotate` of the comment's page.
     rotation: u16,
-    thread: &[&Annotation],
+    thread: &Thread,
     info: &DocInfo,
     view: &mut DocView,
     prefs: &CommentPrefs,
@@ -305,9 +437,9 @@ fn card(
     let key = (a.page, a.index);
     let selected = view.comments.selected == Some(key);
     let color = a.color.map(|c| color32(c.map(f64::from))).unwrap_or(t.accent);
-    let status = thread.iter().rev().filter(|r| !r.is_mark()).find_map(|r| r.state.as_deref());
-    let marked = is_marked(thread);
-    let replies: Vec<&&Annotation> = thread.iter().filter(|r| r.state.is_none()).collect();
+    let status = thread.status.as_deref();
+    let marked = thread.marked;
+    let replies = &thread.replies;
     let editing = view.comments.editing.as_ref().is_some_and(|(p, i, _)| (*p, *i) == key);
     let fill = if selected { t.hover.gamma_multiply(0.7) } else { Color32::TRANSPARENT };
     let mut open_menu = false;
@@ -394,7 +526,8 @@ fn card(
             });
             // Replies, each joined to the avatar above it (the comment's or the previous reply's)
             // by a thread line that runs the whole gap.
-            for r in &replies {
+            for &ri in replies {
+                let r = &info.annotations[ri];
                 ui.add_space(8.0);
                 let mut me = egui::Rect::NOTHING;
                 ui.horizontal(|ui| {
@@ -550,18 +683,12 @@ fn legible(c: Color32, t: &Tokens) -> Color32 {
 /// The Comments panel header's filter and sort controls (Acrobat: filter funnel and "…").
 /// The header's "…" (sort, hide all, summary, data exchange) and filter menus; returns a
 /// command to run.
-pub(crate) fn header_controls(ui: &mut egui::Ui, info: &DocInfo, view: &mut DocView, hidden: bool) -> Option<&'static str> {
+pub(crate) fn header_controls(ui: &mut egui::Ui, info: &DocInfo, view: &mut DocView, hidden: bool, generation: u64) -> Option<&'static str> {
     let mut command = None;
+    // What the document has to filter by comes with the panel's rows, built once.
+    let rows = Rows::of(info, view, generation);
     let cv = &mut view.comments;
-    let mut types: Vec<String> = info.annotations.iter().filter(|a| a.is_comment()).map(|a| kind_label(a).to_string()).collect();
-    types.sort();
-    types.dedup();
-    let mut authors: Vec<String> = info.annotations.iter().filter(|a| a.is_comment()).map(|a| a.author.clone().unwrap_or_default()).collect();
-    authors.sort();
-    authors.dedup();
-    let mut colors: Vec<(String, Option<[f32; 3]>)> = info.annotations.iter().filter(|a| a.is_comment()).map(|a| (color_key(a), a.color)).collect();
-    colors.sort_by(|a, b| a.0.cmp(&b.0));
-    colors.dedup_by(|a, b| a.0 == b.0);
+    let (types, authors, colors) = (&rows.menu.types, &rows.menu.authors, &rows.menu.colors);
     let active = !(cv.hidden_types.is_empty()
         && cv.hidden_authors.is_empty()
         && cv.hidden_statuses.is_empty()
@@ -630,12 +757,12 @@ pub(crate) fn header_controls(ui: &mut egui::Ui, info: &DocInfo, view: &mut DocV
             }
         };
         ui.label(egui::RichText::new(tl!("Type")).small());
-        for ty in &types {
+        for ty in types {
             toggle(ui, &mut cv.hidden_types, ty, tl!(ty));
         }
         ui.separator();
         ui.label(egui::RichText::new(tl!("Author")).small());
-        for a in &authors {
+        for a in authors {
             let name = crate::bidi::visual_auto(a);
             toggle(ui, &mut cv.hidden_authors, a, if a.is_empty() { tl!("Unknown author") } else { &name });
         }
@@ -646,7 +773,7 @@ pub(crate) fn header_controls(ui: &mut egui::Ui, info: &DocInfo, view: &mut DocV
         }
         ui.separator();
         ui.label(egui::RichText::new(tl!("Colour")).small());
-        for (key, c) in &colors {
+        for (key, c) in colors {
             ui.horizontal(|ui| {
                 let name = crate::comments::SWATCHES
                     .iter()

@@ -70,7 +70,6 @@
 	Side panels	Бүйірлік панельдер
 	Enable Acrobat JavaScript	Acrobat JavaScript-ті қосу
 	OK	ОК
-	Join our Discord	Discord-қа қосылыңыз
 	Close	Жабу
 	Next / previous match	Келесі / алдыңғы сәйкестік
 	Copy selected text	Таңдалған мәтінді көшіру
@@ -126,10 +125,8 @@
 	Previous page	Алдыңғы бет
 	Current page — type a page number or label (such as iv) and press Enter	Ағымдағы бет — бет нөмірін немесе белгісін (мысалы, iv) теріңіз де, Enter пернесін басыңыз
 	Zoom — type a percentage and press Enter	Масштаб — пайызды енгізіп, Enter пернесін басыңыз
-	Welcome to PdfCraft	PdfCraft-ге қош келдіңіз
+	Welcome to PDF Forge	PDF Forge-ге қош келдіңіз
 	An open-source PDF workbench — local, private, and scriptable.	Ашық бастапқы кодты PDF жұмыс орны — жергілікті, жеке әрі скрипттерді қолдайтын.
-	Join the ArtCraft community	ArtCraft қауымдастығына қосылыңыз
-	Get help, share feedback and follow development on Discord.	Көмек алыңыз, пікір бөлісіңіз және Discord-тағы әзірлеуді қадағалаңыз.
 	Recommended tools	Ұсынылған құралдар
 	Use now	Дәл қазір пайдалану
 	Open file	Файлды ашу
@@ -273,12 +270,9 @@
 	Split document…	Құжатты бөлу…
 	Number pages…	Беттерді нөмірлеу…
 	Keyboard shortcuts	Пернетақта тіркесімдері
-	Join the ArtCraft Discord	ArtCraft Discord-ына қосылыңыз
-	PdfCraft web page	PdfCraft веб-сайты
-	PdfCraft on GitHub	GitHub-тағы PdfCraft
-	ArtCraft website	ArtCraft веб-сайты
+	PDF Forge on GitHub	GitHub-тағы PDF Forge
 	Check for updates…	Жаңартуларды тексеру…
-	About PdfCraft	PdfCraft туралы
+	About PDF Forge	PDF Forge туралы
 	Export a PDF	PDF экспорттау
 	Export to	Мынаған экспорттау
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -765,9 +759,9 @@
 	Check for updates	Жаңартуларды тексеру
 	No check has run yet.	Тексеру әлі жүргізілген жоқ.
 	Checking for a newer version…	Жаңа нұсқа бар ма екені тексерілуде…
-	PdfCraft {v} is available.	PdfCraft {v} қолжетімді.
+	PDF Forge {v} is available.	PDF Forge {v} қолжетімді.
 	You have version {c}. Download the new version from its release page.	Сізде {c} нұсқасы бар. Жаңа нұсқаны шығарылым бетінен жүктеп алыңыз.
-	PdfCraft {c} is up to date.	PdfCraft {c} нұсқасы ең соңғы.
+	PDF Forge {c} is up to date.	PDF Forge {c} нұсқасы ең соңғы.
 	Couldn't check for updates: {e}	Жаңартуларды тексеру мүмкін болмады: {e}
 	You have version {c}. All releases are listed at {page}.	Сізде {c} нұсқасы бар. Барлық шығарылымдар {page} бетінде көрсетілген.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	GitHub-тан соңғы шығарылымды сұрайды. Ештеңе автоматты түрде жүктелмейді немесе орнатылмайды.
@@ -1390,7 +1384,6 @@
 	Discard	Елемеу
 	Version {v}	Нұсқа {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Rust тілінде жазылған, clean-room әдісімен әзірленген ашық бастапқы кодты PDF қосымшасы. MIT OR Apache-2.0.
-	Part of	Бөлігі
 	Summarize Options	Қорытындылау параметрлері
 	Choose a layout:	Макетті таңдаңыз:
 	Comments only	Тек түсініктемелер
@@ -1758,7 +1751,6 @@
 	At least one signature has problems.	Кемінде бір қолтаңбада мәселелер бар.
 	This document is secured. Some changes are restricted by its security settings.	Бұл құжат қорғалған. Кейбір өзгерістер оның қауіпсіздік параметрлерімен шектеулі.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Бұл динамикалық XFA формасы, оны PdfCraft әлі көрсете алмайды. Көріп тұрғаныңыз — файлдың орынбасар беті.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Бұл формада PdfCraft әлі оқымайтын XFA деректері де бар. Өрістерін толтыра аласыз, бірақ Acrobat орнына XFA мәндерін көрсетуі мүмкін.
 	This document contains {n} interactive form fields.	Бұл құжат {n} интерактивті форма өрісін қамтиды.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Бұл файл зақымдалған еді және жөнделді. Сақтау кезінде жөнделген нұсқа сақталады.
 	Dismiss	Жабу

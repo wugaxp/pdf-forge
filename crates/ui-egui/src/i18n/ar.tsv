@@ -96,7 +96,6 @@
 	Side panels	اللوحات الجانبية
 	Enable Acrobat JavaScript	تفعيل Acrobat JavaScript
 	OK	موافق
-	Join our Discord	انضم إلى خادمنا على Discord
 	Close	إغلاق
 	Next / previous match	التطابق التالي / السابق
 	Copy selected text	نسخ النص المحدد
@@ -165,10 +164,8 @@
 	Previous page	الصفحة السابقة
 	Current page — type a page number or label (such as iv) and press Enter	الصفحة الحالية — اكتب رقم صفحة أو تسميتها (مثل iv) ثم اضغط Enter
 	Zoom — type a percentage and press Enter	التكبير — اكتب نسبة مئوية واضغط Enter
-	Welcome to PdfCraft	مرحبًا بك في PdfCraft
+	Welcome to PDF Forge	مرحبًا بك في PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	منضدة عمل مفتوحة المصدر لملفات PDF — محلية وخاصة وقابلة للبرمجة.
-	Join the ArtCraft community	انضم إلى مجتمع ArtCraft
-	Get help, share feedback and follow development on Discord.	احصل على المساعدة وشارك ملاحظاتك وتابع التطوير على Discord.
 	Recommended tools	أدوات مقترحة
 	Use now	استخدم الآن
 	Open file	فتح ملف
@@ -313,12 +310,9 @@
 	Split document…	تقسيم المستند…
 	Number pages…	ترقيم الصفحات…
 	Keyboard shortcuts	اختصارات لوحة المفاتيح
-	Join the ArtCraft Discord	انضم إلى خادم ArtCraft على Discord
-	PdfCraft web page	صفحة PdfCraft على الويب
-	PdfCraft on GitHub	PdfCraft على GitHub
-	ArtCraft website	موقع ArtCraft
+	PDF Forge on GitHub	PDF Forge على GitHub
 	Check for updates…	التحقق من التحديثات…
-	About PdfCraft	حول PdfCraft
+	About PDF Forge	حول PDF Forge
 	Export a PDF	تصدير ملف PDF
 	Export to	تصدير إلى
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -808,9 +802,9 @@
 	Check for updates	التحقق من التحديثات
 	No check has run yet.	لم يُجرَ أي تحقق بعد.
 	Checking for a newer version…	جارٍ التحقق من وجود إصدار أحدث…
-	PdfCraft {v} is available.	PdfCraft {v} متاح.
+	PDF Forge {v} is available.	PDF Forge {v} متاح.
 	You have version {c}. Download the new version from its release page.	لديك الإصدار {c}. نزّل الإصدار الجديد من صفحة إصداره.
-	PdfCraft {c} is up to date.	PdfCraft {c} محدَّث.
+	PDF Forge {c} is up to date.	PDF Forge {c} محدَّث.
 	Couldn't check for updates: {e}	تعذّر التحقق من التحديثات: {e}
 	You have version {c}. All releases are listed at {page}.	لديك الإصدار {c}. كل الإصدارات مدرجة في {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	يسأل GitHub عن أحدث إصدار. لا يُنزَّل أو يُثبَّت شيء تلقائيًا.
@@ -1449,7 +1443,6 @@
 	Discard	تجاهل
 	Version {v}	الإصدار {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	تطبيق PDF مفتوح المصدر مكتوب بلغة Rust بأسلوب الغرفة النظيفة. MIT OR Apache-2.0.
-	Part of	جزء من
 	Summarize Options	خيارات التلخيص
 	Choose a layout:	اختر تخطيطًا:
 	Comments only	التعليقات فقط
@@ -1835,7 +1828,6 @@
 	At least one signature has problems.	توقيع واحد على الأقل فيه مشكلات.
 	This document is secured. Some changes are restricted by its security settings.	هذا المستند مؤمَّن. بعض التغييرات مقيدة بإعدادات أمانه.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	هذا نموذج XFA ديناميكي، لا يستطيع PdfCraft عرضه بعد. ما تراه هو الصفحة البديلة للملف.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	هذا النموذج يحتوي أيضًا على بيانات XFA، لا يقرؤها PdfCraft بعد. يمكنك تعبئة حقوله، لكن Acrobat قد يعرض قيم XFA بدلًا منها.
 	This document contains {n} interactive form fields.	هذا المستند يحتوي على {n} حقول نموذج تفاعلية.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	هذا الملف كان تالفًا وأُصلح. الحفظ يُبقي النسخة المُصلَحة.
 	Dismiss	تجاهل

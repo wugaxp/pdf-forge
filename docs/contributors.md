@@ -5,6 +5,14 @@ the AI models named in `Co-Authored-By` trailers. This follows the shared craftr
 [`standards/contributors.md`](https://github.com/storytold/craftrules/blob/main/standards/contributors.md);
 this page is the local copy of the decision.
 
+**In this fork:** PDF Forge inherits the code, and the credits, of upstream
+[storytold/pdfcraft](https://github.com/storytold/pdfcraft). The committed
+`contributors/contributors.json` is the snapshot upstream generated on 2026-10-10 (627 commits of
+upstream history): it credits everyone who wrote what this fork ships, and it is kept as it is
+until the generator is run against this fork's own history. That generator
+(`craftrules/scripts/contributors.py`) lives in the upstream team's internal craftrules repository,
+so a fork contributor adds only their own `contributors/people.toml` entry, by hand.
+
 ## Decision
 
 - Two files, both **compiled into the binary** by the UI crate's `build.rs` (nothing is read from

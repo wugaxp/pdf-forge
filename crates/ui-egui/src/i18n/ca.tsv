@@ -91,7 +91,6 @@
 	Flatten Fill & Sign when saving	Aplana Omple i signa en desar
 	Text, marks and signatures become part of the page. Other comments stay editable.	El text, les marques i les signatures passen a formar part de la pàgina. Els altres comentaris continuen sent editables.
 	OK	D'acord
-	Join our Discord	Uneix-te al nostre Discord
 	Close	Tanca
 	Next / previous match	Coincidència següent / anterior
 	Copy selected text	Copia el text seleccionat
@@ -159,10 +158,8 @@
 	Next page	Pàgina següent
 	Previous page	Pàgina anterior
 	Current page — type a page number or label (such as iv) and press Enter	Pàgina actual — escriu un número o una etiqueta de pàgina (com ara iv) i prem Retorn
-	Welcome to PdfCraft	Et donem la benvinguda a PdfCraft
+	Welcome to PDF Forge	Et donem la benvinguda a PDF Forge
 	An open-source PDF workbench — local, private, and scriptable.	Un banc de treball de PDF de codi obert — local, privat i programable.
-	Join the ArtCraft community	Uneix-te a la comunitat d'ArtCraft
-	Get help, share feedback and follow development on Discord.	Obtén ajuda, comparteix comentaris i segueix el desenvolupament a Discord.
 	Recommended tools	Eines recomanades
 	Use now	Utilitza-ho ara
 	Open file	Obre el fitxer
@@ -307,12 +304,9 @@
 	Split document…	Divideix el document…
 	Number pages…	Numera les pàgines…
 	Keyboard shortcuts	Dreceres de teclat
-	Join the ArtCraft Discord	Uneix-te al Discord d'ArtCraft
-	PdfCraft web page	Pàgina web de PdfCraft
-	PdfCraft on GitHub	PdfCraft a GitHub
-	ArtCraft website	Lloc web d'ArtCraft
+	PDF Forge on GitHub	PDF Forge a GitHub
 	Check for updates…	Cerca actualitzacions…
-	About PdfCraft	Quant a PdfCraft
+	About PDF Forge	Quant a PDF Forge
 	Export a PDF	Exporta un PDF
 	Export to	Exporta a
 	Microsoft Word (.docx)	Microsoft Word (.docx)
@@ -768,9 +762,9 @@
 	Check for updates	Cerca actualitzacions
 	No check has run yet.	Encara no s'ha fet cap comprovació.
 	Checking for a newer version…	S'està cercant una versió més recent…
-	PdfCraft {v} is available.	PdfCraft {v} està disponible.
+	PDF Forge {v} is available.	PDF Forge {v} està disponible.
 	You have version {c}. Download the new version from its release page.	Tens la versió {c}. Baixa la versió nova des de la seva pàgina de publicació.
-	PdfCraft {c} is up to date.	PdfCraft {c} està actualitzat.
+	PDF Forge {c} is up to date.	PDF Forge {c} està actualitzat.
 	Couldn't check for updates: {e}	No s'han pogut cercar actualitzacions: {e}
 	You have version {c}. All releases are listed at {page}.	Tens la versió {c}. Totes les versions es llisten a {page}.
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	Consulta a GitHub la darrera versió. No es baixa ni s'instal·la res automàticament.
@@ -1398,7 +1392,6 @@
 	Discard	Descarta
 	Version {v}	Versió {v}
 	A clean-room, open-source PDF application written in Rust. MIT OR Apache-2.0.	Una aplicació PDF de codi obert i clean-room escrita en Rust. MIT OR Apache-2.0.
-	Part of	Part de
 	Summarize Options	Opcions de resum
 	Choose a layout:	Tria una disposició:
 	Comments only	Només comentaris
@@ -1793,7 +1786,6 @@ action wizard	Start	Inicia
 	At least one signature has problems.	Almenys una signatura té problemes.
 	This document is secured. Some changes are restricted by its security settings.	Aquest document està protegit. Alguns canvis estan restringits per la seva configuració de seguretat.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	Aquest és un formulari XFA dinàmic, que PdfCraft encara no pot mostrar. El que veus és la pàgina de substitució del fitxer.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Aquest formulari també conté dades XFA, que PdfCraft encara no llegeix. Pots emplenar-ne els camps, però Acrobat pot mostrar els valors XFA.
 	This document contains {n} interactive form fields.	Aquest document conté {n} camps de formulari interactius.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Aquest fitxer estava malmès i s'ha reparat. En desar, es conserva la versió reparada.
 	Dismiss	Descarta

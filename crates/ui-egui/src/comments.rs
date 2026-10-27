@@ -532,6 +532,9 @@ pub struct CommentView {
     pub tool_done: bool,
     /// What the inline editor (`editing`) does with the keyboard the next time it is drawn.
     pub(crate) editor_focus: Option<EditorFocus>,
+    /// The panel's rows for the document and filters they were built from
+    /// ([`crate::comments_panel::Rows`]).
+    pub(crate) rows: Option<std::sync::Arc<crate::comments_panel::Rows>>,
 }
 
 /// A one-off change to the keyboard focus of the Comments panel's inline editor. The editor

@@ -285,6 +285,80 @@ fn incremental_save_leaves_out_additions_nothing_refers_to() {
     assert!(stamped.windows(11).any(|w| w == b"added after") && !stamped.windows(12).any(|w| w == b"dropped leaf"));
 }
 
+/// A trailer that carries `/Root` and `/Info` as direct dictionaries: the writer gives them
+/// object numbers of its own, so a full rewrite keeps the catalog (and its pages) and the whole
+/// `/Info`, and a `/ModDate` stamp updates a direct `/Info` where it is instead of replacing it
+/// with a fresh dictionary that holds nothing else.
+#[test]
+fn direct_trailer_root_and_info_survive_a_save() {
+    let mut doc = Document::open(Arc::new(classic_table())).unwrap();
+    let catalog = doc.get(doc.root().unwrap()).as_dict().cloned().unwrap();
+    let mut info = Dict::new();
+    info.set(b"Title".to_vec(), Object::String(pdfcraft_cos::PdfString { bytes: b"Kept".to_vec(), hex: false }));
+    info.set(b"Author".to_vec(), Object::String(pdfcraft_cos::PdfString { bytes: b"Ada".to_vec(), hex: false }));
+    doc.trailer_mut().set(b"Root".to_vec(), Object::Dict(catalog));
+    doc.trailer_mut().set(b"Info".to_vec(), Object::Dict(info));
+    for (how, bytes) in [
+        ("incremental", write_incremental(&doc, &SaveOptions { mod_date: Some("D:20260101000000Z".into()), ..SaveOptions::default() }).unwrap()),
+        ("full", write_full(&doc, &SaveOptions { mod_date: Some("D:20260101000000Z".into()), ..SaveOptions::default() }).unwrap()),
+    ] {
+        let back = Document::open(Arc::new(bytes.clone())).unwrap();
+        assert!(back.repair_log().is_empty(), "{how}: {:?}", back.repair_log());
+        assert!(back.root().is_some(), "{how}: the catalog is an indirect value now");
+        assert_eq!(hayro_pages(&bytes), 1, "{how}: the pages stay");
+        assert_eq!(title(&back), b"Kept", "{how}: the /Info entries are kept");
+        let info = back.resolve(back.trailer().get(b"Info").unwrap());
+        let text = |k: &[u8]| info.as_dict().unwrap().get(k).and_then(|v| v.as_string()).map(|s| s.bytes.as_slice());
+        assert_eq!(text(b"Author"), Some(b"Ada".as_slice()), "{how}");
+        assert_eq!(text(b"ModDate"), Some(b"D:20260101000000Z".as_slice()), "{how}: stamped in place");
+        assert_qpdf_clean(&bytes);
+    }
+}
+
+/// An added object that a dangling reference in an unchanged object names is kept: the number
+/// it took is one the file itself points at, and writing it free would leave the saved file
+/// pointing at nothing where it points at the addition now.
+#[test]
+fn an_addition_a_dangling_reference_names_is_kept() {
+    // Object 2 refers to object 5, past the file's `/Size`: that reference dangles in the file,
+    // and `Document::add` hands the number out to the next addition.
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /Extra 5 0 R >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>",
+        "<< /Length 0 >>\nstream\n\nendstream",
+    ];
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+
+    let mut doc = Document::open(Arc::new(bytes)).unwrap();
+    let kept = doc.add(Object::String(pdfcraft_cos::PdfString { bytes: b"kept by the dangling ref".to_vec(), hex: false }));
+    assert_eq!(kept.num, 5, "the addition takes the dangling reference's number");
+    let saved = write_incremental(&doc, &SaveOptions { drop_unlinked: true, ..SaveOptions::default() }).unwrap();
+    let back = Document::open(Arc::new(saved.clone())).unwrap();
+    assert_eq!(
+        back.get(kept).as_string().map(|s| s.bytes.as_slice()),
+        Some(b"kept by the dangling ref".as_slice()),
+        "the file's own dangling reference points at it"
+    );
+    // An addition nothing names at all is still left out, dangling references or not.
+    let gone = doc.add(Object::String(pdfcraft_cos::PdfString { bytes: b"not named".to_vec(), hex: false }));
+    let saved = write_incremental(&doc, &SaveOptions { drop_unlinked: true, ..SaveOptions::default() }).unwrap();
+    assert!(!saved.windows(9).any(|w| w == b"not named"));
+    assert_eq!(*Document::open(Arc::new(saved.clone())).unwrap().get(gone), Object::Null);
+    assert_qpdf_clean(&saved);
+}
+
 #[test]
 fn qpdf_accepts_object_stream_output() {
     let qpdf = pdfcraft_oracle::or_skip!(pdfcraft_oracle::qpdf());

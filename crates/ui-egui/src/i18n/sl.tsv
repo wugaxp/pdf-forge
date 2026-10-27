@@ -64,7 +64,7 @@
 	A summary describes the table's purpose and layout. Add a Summary attribute to each table.	Povzetek opisuje namen in postavitev tabele. Vsaki tabeli dodajte atribut Summary.
 	AI assistant	Pomočnik za UI
 	About	O programu
-	About PdfCraft	O programu PdfCraft
+	About PDF Forge	O programu PDF Forge
 	Accepted	Potrjeno
 	Accessibility	Dostopnost
 	Accessibility Checker	Preverjanje dostopnosti
@@ -235,7 +235,6 @@
 	Archive documents	Arhiviraj dokumente
 	Area	Ploščina
 	Arrow	Puščica
-	ArtCraft website	Spletna stran ArtCraft
 	Ask about this document	Vprašaj o tem dokumentu
 	Asks GitHub for the latest release. Nothing is downloaded or installed automatically.	Vpraša GitHub za najnovejšo izdajo. Ničesar se ne prenese ali namesti samodejno.
 	Associated with content	Povezano z vsebino
@@ -882,7 +881,6 @@
 	Full screen mode	Celozaslonski način
 	General	Splošno
 	Geospatial location	Geoprostorska lokacija
-	Get help, share feedback and follow development on Discord.	Poiščite pomoč, delite povratne informacije in spremljajte razvoj na Discordu.
 	Go to a page view	Pojdi na pogled strani
 	Go to page {p}	Pojdi na stran {p}
 	Go to page…	Pojdi na stran…
@@ -990,9 +988,6 @@
 	JavaScript console…	Konzola JavaScript…
 	JavaScript is turned off (Preferences ▸ JavaScript).	JavaScript je izklopljen (Nastavitve > JavaScript).
 	JavaScript, e.g. getField("total").value	JavaScript, npr. getField("total").value
-	Join our Discord	Discord kanal
-	Join the ArtCraft Discord	Pridružite se Discordu ArtCraft
-	Join the ArtCraft community	Pridružite se skupnosti ArtCraft
 	July	Julij
 	June	Junij
 	Justify	Obojestransko poravnano
@@ -1342,7 +1337,6 @@
 	Pages with links, comments or fields should tab in structure order. The fix sets each page's tab order to Use Document Structure.	Strani s povezavami, komentarji ali polji naj se pomikajo s tabulatorjem po vrstnem redu strukture. Popravek nastavi vrstni red tabulatorja vsake strani na Uporabi strukturo dokumenta.
 	Pages:	Strani:
 	Paper:	Papir:
-	Part of	Del
 	Passed	Uspešno
 	Password	Geslo
 	Password protection will be applied when you save	Zaščita z geslom bo uporabljena ob shranjevanju
@@ -1356,11 +1350,10 @@
 	Patterns	Vzorci
 	Patterns (graphics objects)	Vzorci (grafični objekti)
 	PdfCraft didn't shut down normally. These documents had changes that were autosaved:	PdfCraft se ni zaprl običajno. Ti dokumenti so imeli samodejno shranjene spremembe:
-	PdfCraft on GitHub	PdfCraft na GitHubu
-	PdfCraft web page	Spletna stran PdfCraft
+	PDF Forge on GitHub	PDF Forge na GitHubu
 	PdfCraft works offline. No telemetry, no account, and no cloud processing unless you add a provider.	PdfCraft deluje brez povezave. Brez telemetrije, brez računa in brez obdelave v oblaku, razen če dodate ponudnika.
-	PdfCraft {c} is up to date.	PdfCraft {c} je posodobljen.
-	PdfCraft {v} is available.	Na voljo je PdfCraft {v}.
+	PDF Forge {c} is up to date.	PDF Forge {c} je posodobljen.
+	PDF Forge {v} is available.	Na voljo je PDF Forge {v}.
 	People may need more time to respond. Check that nothing has a time limit.	Ljudje bodo morda potrebovali več časa za odziv. Preverite, da nič nima časovne omejitve.
 	Percentage	Odstotek
 	Perimeter	Obseg
@@ -1902,7 +1895,6 @@
 	This field is locked. Unlock it to change its properties.	To polje je zaklenjeno. Odklenite ga, da spremenite njegove lastnosti.
 	This file was damaged and has been repaired. Saving keeps the repaired version.	Ta datoteka je bila poškodovana in je bila popravljena. Shranjevanje obdrži popravljeno različico.
 	This folder isn't available right now. It may have moved, or its drive or cloud sync is offline.	Ta mapa trenutno ni na voljo. Morda je bila premaknjena ali pa je njen pogon ali sinhronizacija v oblaku brez povezave.
-	This form also contains XFA data, which PdfCraft doesn't read yet. You can fill its fields, but Acrobat may show the XFA values instead.	Ta obrazec vsebuje tudi podatke XFA, ki jih PdfCraft še ne bere. Polja lahko izpolnite, vendar Acrobat morda prikaže vrednosti XFA.
 	This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.	To je dinamični obrazec XFA, ki ga PdfCraft še ne more prikazati. Tisto, kar vidite, je nadomestna stran datoteke.
 	This measurement needs at least {n} points.	Ta meritev potrebuje vsaj točk: {n}.
 	This page couldn't be displayed.\n{e}	Te strani ni bilo mogoče prikazati.\n{e}
@@ -2019,7 +2011,7 @@
 	Warnings	Opozorila
 	Watermark	Vodni žig
 	Weak	Šibko
-	Welcome to PdfCraft	Dobrodošli v PdfCraftu
+	Welcome to PDF Forge	Dobrodošli v PDF Forgeu
 	What word or phrase would you like to search for?	Katero besedo ali besedno zvezo želite poiskati?
 	Whole words only	Samo cele besede
 	Width	Širina
