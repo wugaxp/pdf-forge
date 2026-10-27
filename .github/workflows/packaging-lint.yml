@@ -22,3 +22,12 @@ jobs:
     # SHA-pinned: a personal fork does not track craft-common-actions' moving `main`; bump this
     # ref deliberately after reading the shared workflow's changes.
     uses: storytold/craft-common-actions/.github/workflows/packaging-lint.yml@be6bbf3ca5a5de466786908b3986163da7c05314
+
+  # The fork must not advertise the upstream project: its site, Discord and vendor name stay
+  # out of everything the release pipeline ships or builds from.
+  upstream-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: packaging/lint-brand.sh
+        shell: bash

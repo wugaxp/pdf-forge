@@ -469,7 +469,7 @@ impl std::fmt::Display for TextNotice {
         match (&self.field, self.redrawn_elsewhere) {
             (Some(name), true) => write!(
                 f,
-                "form field {name:?} (page {page}) holds {ch}, which its font can't draw: the value is saved, PdfCraft shows ? in its place, and other PDF viewers redraw the field from the value"
+                "form field {name:?} (page {page}) holds {ch}, which its font can't draw: the value is saved, PDF Forge shows ? in its place, and other PDF viewers redraw the field from the value"
             ),
             (Some(name), false) => write!(
                 f,
@@ -525,6 +525,18 @@ impl Document {
     /// read for editing).
     pub fn accessibility_check(&self, options: &a11y::Options) -> Option<a11y::Report> {
         self.editor.as_ref().map(|e| a11y::check(&e.cos, options))
+    }
+
+    /// Whether the document can be checked for accessibility at all (it must be readable for
+    /// editing), without running the check itself.
+    pub fn can_accessibility_check(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// Whether opening the file repaired damage. Cheap: it copies nothing, unlike
+    /// [`Self::repair_log`], which a per-frame caller would run for every frame.
+    pub fn repaired(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| !e.cos.repair_log().is_empty())
     }
 
     /// A script of this XFA form ran past its time limit and was abandoned, so the form's
@@ -3475,7 +3487,7 @@ fn strip_xfa(doc: &mut pdfcraft_cos::Document, cx: &mut EditCtx) -> Result<(), E
     cx.xfa_removed.extend(r.notes());
     if differ > 0 {
         cx.xfa_removed.push(format!(
-            "{differ} field(s) held a value other than the form's XFA data (data PdfCraft could not read into them); the data's version is gone"
+            "{differ} field(s) held a value other than the form's XFA data (data PDF Forge could not read into them); the data's version is gone"
         ));
     }
     Ok(())

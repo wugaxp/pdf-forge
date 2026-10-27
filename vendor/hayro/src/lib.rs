@@ -84,6 +84,64 @@ impl<'a> RenderCache<'a> {
             outline_cache: Rc::new(RefCell::new(HashMap::new())),
         }
     }
+
+    /// PdfCraft patch: this cache's [`RenderCacheStores`], for building further caches that
+    /// share what it has read of the document.
+    pub fn stores(&self) -> RenderCacheStores {
+        RenderCacheStores {
+            interpreter: self.interpreter_cache.stores(),
+        }
+    }
+}
+
+/// PdfCraft patch: the shareable half of a [`RenderCache`] ([`RenderCache::stores`]): what it
+/// has read of the document — decoded images, colour spaces and ICC profiles — as owned values
+/// that borrow nothing from it. Cloning shares them and a cache built from them shares them.
+/// This is the closest a renderer that owns its document can come to one cache for its
+/// lifetime: a cache borrows the document it would sit beside, which safe Rust cannot express,
+/// so the renderer keeps these stores instead and builds each render's cache from them. Fonts
+/// and glyph outlines borrow or rebuild per render and are not shared. Send and sync.
+///
+/// The stores key on document positions and contents, so they are only valid for one document
+/// (or a re-parse of the same bytes).
+#[derive(Clone)]
+pub struct RenderCacheStores {
+    interpreter: hayro_interpret::InterpreterCacheStores,
+}
+
+impl RenderCacheStores {
+    /// Stores holding nothing, as a new cache does.
+    pub fn new() -> Self {
+        Self {
+            interpreter: hayro_interpret::InterpreterCacheStores::new(),
+        }
+    }
+
+    /// A fresh [`RenderCache`] over these stores: images and objects read through it are kept
+    /// for every other cache built from the same stores.
+    pub fn new_cache<'a>(&self) -> RenderCache<'a> {
+        RenderCache {
+            interpreter_cache: self.interpreter.new_cache(),
+            outline_cache: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    /// PdfCraft patch (32): how many images were decoded into these stores (their misses, not
+    /// counting images that are never cached), for diagnostics and tests.
+    pub fn decoded_image_decodes(&self) -> usize {
+        self.interpreter.decoded_image_decodes()
+    }
+
+    /// PdfCraft patch (48): how many `/ICCBased` profiles were read into these stores.
+    pub fn icc_profile_reads(&self) -> usize {
+        self.interpreter.icc_profile_reads()
+    }
+}
+
+impl Default for RenderCacheStores {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// PdfCraft patch: replacement colours for the "reading colours" view setting (Acrobat's

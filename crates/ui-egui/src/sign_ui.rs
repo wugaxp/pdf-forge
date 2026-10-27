@@ -183,7 +183,7 @@ pub(crate) fn page_input(
             if r.width() >= 8.0 && r.height() >= 8.0 {
                 let user = |q: Pos2| {
                     let (vx, vy) = xf.screen_to_view(q);
-                    info.pages[page].view_to_user(vx, vy)
+                    info.pages.get(page).map_or([vx, vy], |pg| pg.view_to_user(vx, vy))
                 };
                 let (a, b) = (user(r.left_top()), user(r.right_bottom()));
                 let rect = [a[0].min(b[0]) as f64, a[1].min(b[1]) as f64, a[0].max(b[0]) as f64, a[1].max(b[1]) as f64];
@@ -1086,9 +1086,9 @@ fn sign_as(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
             ui.label("");
             ui.label(
                 egui::RichText::new(if entry.path.starts_with("windows:") {
-                    tl!("The key is in the Windows certificate store, which may ask to allow PdfCraft to use it.")
+                    tl!("The key is in the Windows certificate store, which may ask to allow PDF Forge to use it.")
                 } else {
-                    tl!("The key is in the macOS Keychain, which may ask to allow PdfCraft to use it.")
+                    tl!("The key is in the macOS Keychain, which may ask to allow PDF Forge to use it.")
                 })
                 .small()
                 .color(t.text_muted),

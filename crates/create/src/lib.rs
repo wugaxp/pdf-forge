@@ -58,7 +58,7 @@ fn set_page_kids(doc: &mut Document, kids: Vec<ObjRef>) -> Result<(), CreateErro
 fn set_title(doc: &mut Document, title: &str) {
     let mut info = Dict::new();
     info.set(b"Title".to_vec(), PdfString::text(title));
-    info.set(b"Producer".to_vec(), PdfString::text("PdfCraft"));
+    info.set(b"Producer".to_vec(), PdfString::text("PDF Forge"));
     let r = doc.add(info);
     doc.trailer_mut().set(b"Info".to_vec(), Object::Ref(r));
 }

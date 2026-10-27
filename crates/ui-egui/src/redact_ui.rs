@@ -302,7 +302,7 @@ pub type AreaDrag = Option<(usize, Pos2)>;
 
 fn to_user(xf: &PageXform, info: &DocInfo, page: usize, p: Pos2) -> [f64; 2] {
     let (vx, vy) = xf.screen_to_view(p);
-    let u = info.pages[page].view_to_user(vx, vy);
+    let u = info.pages.get(page).map_or([vx, vy], |pg| pg.view_to_user(vx, vy));
     [u[0] as f64, u[1] as f64]
 }
 
@@ -486,9 +486,11 @@ impl PdfCraftApp {
         let author = self.comment_prefs.author.clone();
         let edits: Vec<Edit> = pages
             .iter()
-            .map(|&p| {
-                let c = doc.info.pages[p].crop;
-                self.redact_prefs.mark(p, vec![rect_quad([c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64])], &author)
+            .filter_map(|&p| {
+                // The draft's range is clamped to the page count, but the pages themselves are
+                // untrusted: a page past their end is skipped rather than indexed.
+                let c = doc.info.pages.get(p)?.crop;
+                Some(self.redact_prefs.mark(p, vec![rect_quad([c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64])], &author))
             })
             .collect();
         match <[Edit; 1]>::try_from(edits) {

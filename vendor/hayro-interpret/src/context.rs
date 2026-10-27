@@ -153,6 +153,68 @@ impl<'a> InterpreterCache<'a> {
     pub fn icc_profile_reads(&self) -> usize {
         self.object_cache.icc_profile_reads()
     }
+
+    /// PdfCraft patch: this cache's [`InterpreterCacheStores`], for building further caches that
+    /// share what it has read.
+    pub fn stores(&self) -> InterpreterCacheStores {
+        InterpreterCacheStores {
+            object_cache: self.object_cache.clone(),
+            decoded_cache: self.decoded_cache.clone(),
+        }
+    }
+}
+
+/// PdfCraft patch: the shareable half of an [`InterpreterCache`] — its decoded-image and object
+/// stores, which hold owned values and borrow nothing from the document. Cloning shares them,
+/// and a cache built from them shares them, so a caller that owns its document but cannot hold
+/// one cache beside it for its lifetime (a cache borrows the document it would sit next to) has
+/// every render share these stores instead: images and colour profiles are read once per
+/// document, not once per render. Fonts are not shared: they borrow the document and are
+/// rebuilt per cache. Send and sync, so a renderer can keep them across threads.
+///
+/// The stores key on document positions and contents, so they are only valid for one document
+/// (or a re-parse of the same bytes).
+#[derive(Clone)]
+pub struct InterpreterCacheStores {
+    pub(crate) object_cache: Cache,
+    pub(crate) decoded_cache: DecodedImageCache,
+}
+
+impl InterpreterCacheStores {
+    /// Stores holding nothing, as a new cache does.
+    pub fn new() -> Self {
+        Self {
+            object_cache: Cache::new(),
+            decoded_cache: DecodedImageCache::new(),
+        }
+    }
+
+    /// A fresh [`InterpreterCache`] over these stores: images and objects read through it are
+    /// kept for every other cache built from the same stores.
+    pub fn new_cache<'a>(&self) -> InterpreterCache<'a> {
+        InterpreterCache {
+            font_cache: Rc::new(RefCell::new(HashMap::new())),
+            object_cache: self.object_cache.clone(),
+            decoded_cache: self.decoded_cache.clone(),
+        }
+    }
+
+    /// PdfCraft patch (32): how many images were decoded into these stores (their misses, not
+    /// counting images that are never cached), for diagnostics and tests.
+    pub fn decoded_image_decodes(&self) -> usize {
+        self.decoded_cache.decodes()
+    }
+
+    /// PdfCraft patch (48): how many `/ICCBased` profiles were read into these stores.
+    pub fn icc_profile_reads(&self) -> usize {
+        self.object_cache.icc_profile_reads()
+    }
+}
+
+impl Default for InterpreterCacheStores {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A per-page interpretation context that borrows shared data from an [`InterpreterCache`].

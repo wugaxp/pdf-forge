@@ -290,6 +290,38 @@ fn overlay_cache_is_bounded_and_new_documents_take_the_fallback() {
     assert_eq!(scans(&cache), 4);
 }
 
+/// The parsed signed revisions are budgeted by bytes, not by entry count: one entry is a
+/// whole copy of the bytes a signature covers, so a large signed document must not be able to
+/// retain gigabytes of them.
+#[test]
+fn the_revision_cache_budgets_bytes_and_evicts_the_oldest() {
+    let doc = fixture(&[STAMP]);
+    let bytes = doc.bytes().clone();
+    let end = bytes.len();
+    let cache = DigestCache::default();
+
+    // A single revision longer than the whole budget is never cached.
+    cache.revisions.lock().unwrap().remember((REVISION_CACHE_BUDGET + 1, [1; 32]), doc.clone());
+    assert!(cache.revisions.lock().unwrap().map.is_empty());
+
+    // A cached revision occupying the whole budget is evicted, oldest first, when a fresh
+    // one no longer fits; the budget is never exceeded.
+    cache.revisions.lock().unwrap().remember((REVISION_CACHE_BUDGET, [2; 32]), doc.clone());
+    assert!(cache.revision(&doc, &bytes, end).is_some(), "a fresh revision is parsed and kept");
+    {
+        let cache = cache.revisions.lock().unwrap();
+        assert!(cache.map.contains_key(&(end, fingerprint(&bytes))), "the fresh revision is cached");
+        assert!(!cache.map.contains_key(&(REVISION_CACHE_BUDGET, [2; 32])), "the oldest entry made room");
+        assert!(cache.bytes <= REVISION_CACHE_BUDGET);
+    }
+    // Re-caching the same revision does not double-count its bytes.
+    cache.revision(&doc, &bytes, end);
+    let cache = cache.revisions.lock().unwrap();
+    assert_eq!(cache.map.len(), 1);
+    assert_eq!(cache.bytes, end);
+    assert_eq!(cache.order.len(), 1);
+}
+
 /// Local, read-only corpus diagnostic; intentionally separate from ordinary timing.
 /// The source PDF is never copied into the repository or written by this probe.
 #[test]

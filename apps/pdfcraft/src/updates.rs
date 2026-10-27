@@ -6,6 +6,9 @@ use pdfcraft_ui_egui::updates::{RELEASES_PAGE, Release};
 
 const LATEST: &str = "https://api.github.com/repos/wugaxp/pdf-forge/releases/latest";
 
+/// Identifies the update check to api.github.com, which requires a User-Agent.
+const USER_AGENT: &str = concat!("PDF Forge/", env!("CARGO_PKG_VERSION"));
+
 /// The latest release. The answer is untrusted: its size is capped, and only a page under
 /// [`RELEASES_PAGE`] is ever offered for download (anything else falls back to that list).
 pub fn latest_release() -> Result<Release, String> {
@@ -17,7 +20,7 @@ pub fn latest_release() -> Result<Release, String> {
     let mut response = agent
         .get(LATEST)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", concat!("PdfCraft/", env!("CARGO_PKG_VERSION")))
+        .header("User-Agent", USER_AGENT)
         // Read error statuses ourselves: a 403 from GitHub usually means its anonymous
         // rate limit ran out, and the retry time rides along in a response header.
         .config()
@@ -119,6 +122,12 @@ mod tests {
         for bad in [None, Some(""), Some("soon"), Some("1799999999"), Some("1800000000")] {
             assert_eq!(rate_limited(bad, 1800000000), later);
         }
+    }
+
+    #[test]
+    fn the_update_check_identifies_pdf_forge() {
+        assert!(USER_AGENT.starts_with("PDF Forge/"), "{USER_AGENT}");
+        assert!(USER_AGENT.contains(env!("CARGO_PKG_VERSION")), "{USER_AGENT}");
     }
 
     /// Live: asks GitHub over TLS with the OS's roots (`cargo test -p pdfcraft -- --ignored`).

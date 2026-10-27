@@ -315,6 +315,33 @@ struct PageTex {
     tex: TextureHandle,
 }
 
+/// What the page layout depends on: the zoom and device scale it was fitted to, the content
+/// width, the layout and its options, the view's rotation (pages swap sides on a quarter
+/// turn), and the document's pages and edit generation.
+#[derive(Clone, Copy, PartialEq)]
+struct LayoutKey {
+    zoom: u32,
+    content_w: u32,
+    ppp: u32,
+    layout: PageLayout,
+    cover: bool,
+    show_page_gaps: bool,
+    rotation: u16,
+    generation: u64,
+}
+
+/// A document's page layout: a rect per page in content coordinates (origin at the scroll
+/// content's top-left), the page index range and vertical band of each row (rows are laid out
+/// top to bottom, their bands disjoint), and the content height.
+struct Layout {
+    rects: Vec<Rect>,
+    rows: Vec<(usize, usize, Rect)>,
+    content_h: f32,
+}
+
+/// The signed-documents banner a view shows: icon, colour, template and its argument.
+type SignBanner = Option<(&'static str, Color32, &'static str, String)>;
+
 /// Retained RGBA texture accounting for automation and performance regressions. These
 /// surface bytes exclude driver overhead and temporary upload buffers; they are not RSS.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -506,6 +533,18 @@ pub struct DocView {
     page_count: usize,
     /// Page heights in points (view space), for mapping text positions to scroll offsets.
     page_heights: Vec<f32>,
+    /// The page layout as last built, with what it was built from: rebuilding the rects (and
+    /// the row bands the viewport binary-searches) is work a frame only redoes when the zoom,
+    /// the layout or the document changed.
+    layout_cache: Option<(LayoutKey, std::sync::Arc<Layout>)>,
+    /// The signed-documents banner as last built, with a fingerprint of what it can depend on:
+    /// the document's bytes and edit generation, and each signature's verdict. Building its
+    /// sentence is string work a frame does not need to redo.
+    sign_banner: Option<(u64, SignBanner)>,
+    /// Byte totals of the raster caches (thumbnails, pages, tiles), computed at most once per
+    /// frame and kept across its uploads: each admission would otherwise fold over every
+    /// cached texture.
+    cache_bytes: Option<(usize, usize, usize)>,
     /// Screen rects of the pages drawn last frame (hit-testing, tests, automation).
     screen_rects: Vec<(usize, Rect)>,
     screen_xforms: Vec<(usize, PageXform)>,
@@ -712,6 +751,34 @@ pub enum ViewAction {
 }
 
 impl DocView {
+    /// The signed-documents banner (icon, colour, template, argument), kept from last frame
+    /// with a fingerprint of what it can depend on: the document's bytes and edit generation,
+    /// and each signature's verdict (a validation can change it). Building the certified
+    /// banner's sentence is string work a frame does not need to redo.
+    fn sign_banner(&mut self, doc: &pdfcraft_engine::Document) -> Option<(&'static str, Color32, &'static str, String)> {
+        use std::hash::{Hash, Hasher};
+        let mut key = std::hash::DefaultHasher::new();
+        (std::sync::Arc::as_ptr(&doc.bytes) as usize, doc.edit_generation(), doc.signatures.len()).hash(&mut key);
+        for s in doc.signatures.iter() {
+            (
+                s.signed,
+                s.certify.is_some(),
+                s.status == pdfcraft_engine::SignatureStatus::Valid,
+                s.status == pdfcraft_engine::SignatureStatus::Invalid,
+            )
+                .hash(&mut key);
+        }
+        let key = key.finish();
+        if let Some((k, banner)) = &self.sign_banner
+            && *k == key
+        {
+            return banner.as_ref().map(|(icon, color, template, argument)| (*icon, *color, *template, argument.clone()));
+        }
+        let banner = crate::sign_ui::banner(&doc.signatures);
+        self.sign_banner = Some((key, banner.clone()));
+        banner
+    }
+
     pub fn raster_memory(&self) -> RasterMemory {
         RasterMemory {
             thumbnail_count: self.thumbs.len(),
@@ -814,6 +881,9 @@ impl DocView {
             viewport_h: 600.0,
             page_count: info.pages.len(),
             page_heights: info.pages.iter().map(|p| p.height).collect(),
+            layout_cache: None,
+            sign_banner: None,
+            cache_bytes: None,
             screen_rects: Vec::new(),
             screen_xforms: Vec::new(),
             viewport_screen: Rect::NOTHING,
@@ -1945,6 +2015,8 @@ impl DocView {
         self.thumb_demand.clear();
         self.frame_queue.clear();
         self.frame_visible.clear();
+        // The totals describe this frame's caches; demand and eviction have not run yet.
+        self.cache_bytes = None;
     }
 
     pub(crate) fn need_thumbnail(&mut self, page: usize, visible: bool) {
@@ -2249,6 +2321,9 @@ impl DocView {
             let key = (page, r.request.tag, t.x, t.y);
             let tex = ctx.load_texture(format!("tile-{:?}-{page}-{}-{}", self.id, t.x, t.y), img, TextureOptions::LINEAR);
             self.tiles.insert(key, tex);
+            if let Some((_, _, tile_bytes)) = self.cache_bytes.as_mut() {
+                *tile_bytes = tile_bytes.saturating_add(bytes);
+            }
             self.stale_tiles.remove(&key);
             if !self.stale_tiles.iter().any(|k| k.0 == page) {
                 self.forms.unbaked.retain(|(_, p)| *p != page);
@@ -2270,10 +2345,16 @@ impl DocView {
         } else if r.request.tag & THUMB_TAG != 0 {
             let tex = ctx.load_texture(format!("thumb-{:?}-{page}", self.id), img, TextureOptions::LINEAR);
             self.thumbs.insert(page, PageTex { tag: r.request.tag, tex });
+            if let Some((thumb_bytes, _, _)) = self.cache_bytes.as_mut() {
+                *thumb_bytes = thumb_bytes.saturating_add(bytes);
+            }
             self.stale_thumbs.remove(&page);
         } else {
             let tex = ctx.load_texture(format!("page-{:?}-{page}", self.id), img, TextureOptions::LINEAR);
             self.pages.insert(page, PageTex { tag: r.request.tag, tex });
+            if let Some((_, page_bytes, _)) = self.cache_bytes.as_mut() {
+                *page_bytes = page_bytes.saturating_add(bytes);
+            }
             self.signature_drag.page_received(page);
             self.move_background.page_received(page);
             if !self.page_out_of_date(page) {
@@ -2299,25 +2380,43 @@ impl DocView {
         if req.tag & (GRID_TAG | PRINT_TAG) != 0 {
             return true;
         }
+        // The caches' byte totals, computed once for this frame and kept across its uploads:
+        // folding over every cached texture for every uploaded raster was work per upload.
+        // They drift within the frame only by what this frame adds and evicts.
+        let (thumb_bytes, page_bytes, tile_bytes) = *self.cache_bytes.get_or_insert_with(|| {
+            (
+                self.thumbs.values().fold(0usize, |n, p| n.saturating_add(texture_bytes(&p.tex))),
+                self.pages.values().fold(0usize, |n, p| n.saturating_add(texture_bytes(&p.tex))),
+                self.tiles.values().fold(0usize, |n, tex| n.saturating_add(texture_bytes(tex))),
+            )
+        });
         if let Some(t) = req.tile {
             let key = (req.page, req.tag, t.x, t.y);
-            self.tiles.remove(&key);
-            let retained = self.tiles.values().fold(0usize, |n, tex| n.saturating_add(texture_bytes(tex)));
-            visible || bytes <= TILE_BYTES.saturating_sub(retained)
+            let removed = self.tiles.remove(&key).map_or(0usize, |tex| texture_bytes(&tex));
+            self.cache_bytes = Some((thumb_bytes, page_bytes, tile_bytes.saturating_sub(removed)));
+            visible || bytes <= TILE_BYTES.saturating_sub(tile_bytes.saturating_sub(removed))
         } else {
             let thumb = req.tag & THUMB_TAG != 0;
-            let (cache, limit) = if thumb { (&mut self.thumbs, THUMB_BYTES) } else { (&mut self.pages, PAGE_BYTES) };
-            cache.remove(&req.page);
-            let mut retained = cache.values().fold(0usize, |n, p| n.saturating_add(texture_bytes(&p.tex)));
+            let (total, limit) = if thumb { (thumb_bytes, THUMB_BYTES) } else { (page_bytes, PAGE_BYTES) };
+            let (replaced, cache): (usize, &mut HashMap<usize, PageTex>) = if thumb {
+                (self.thumbs.remove(&req.page).map_or(0, |p| texture_bytes(&p.tex)), &mut self.thumbs)
+            } else {
+                (self.pages.remove(&req.page).map_or(0, |p| texture_bytes(&p.tex)), &mut self.pages)
+            };
+            let mut retained = total.saturating_sub(replaced);
             // A zoom/DPI change can temporarily retain larger stale images than the new
             // demand estimates. Evict those first, then let the current demand refill them.
             let on_screen = |p: &usize| !thumb && self.frame_visible.contains(p);
             while retained.saturating_add(bytes) > limit {
-                let Some(page) = cache.keys().copied().filter(|p| !on_screen(p)).max_by_key(|p| p.abs_diff(self.current)) else { break };
+                let Some(page) = cache.keys().copied().filter(|p| !on_screen(p)).max_by_key(|p| p.abs_diff(self.current)) else {
+                    break;
+                };
                 if let Some(old) = cache.remove(&page) {
                     retained = retained.saturating_sub(texture_bytes(&old.tex));
                 }
             }
+            let totals = if thumb { (retained, page_bytes, tile_bytes) } else { (thumb_bytes, retained, tile_bytes) };
+            self.cache_bytes = Some(totals);
             visible || bytes <= limit.saturating_sub(retained)
         }
     }
@@ -2374,8 +2473,10 @@ impl DocView {
         (max_w * self.zoom * PT * per_row + 2.0 * SIDE).max(avail_w)
     }
 
-    /// Page rects in content coordinates (origin at the scroll content's top-left).
-    fn layout(&self, info: &DocInfo, content_w: f32, ppp: f32) -> Vec<Rect> {
+    /// Page rects in content coordinates (origin at the scroll content's top-left), with each
+    /// row's page range and vertical band (rows stack top to bottom, their bands disjoint) and
+    /// the content height.
+    fn layout(&self, info: &DocInfo, content_w: f32, ppp: f32) -> Layout {
         let s = self.zoom * PT;
         let gap = self.page_gap();
         let page_size = |p: &pdfcraft_render::PageInfo| {
@@ -2389,36 +2490,69 @@ impl DocView {
             }
         };
         let mut rects = Vec::with_capacity(info.pages.len());
+        let mut rows: Vec<(usize, usize, Rect)> = Vec::new();
         let mut y = MARGIN;
         match self.layout {
             PageLayout::Single => {
-                for p in &info.pages {
+                for p in info.pages.iter() {
                     let size = page_size(p);
                     rects.push(Rect::from_min_size(pos2(((content_w - size.x) / 2.0).max(SIDE), y), size));
                     y += size.y + gap;
                 }
+                rows = rects.iter().enumerate().map(|(i, r)| (i, i + 1, *r)).collect();
             }
             PageLayout::TwoUp => {
                 // With a cover page, the first page sits alone on the right.
-                let rows: Vec<&[pdfcraft_render::PageInfo]> = if self.cover && !info.pages.is_empty() {
+                let rows_of_pages: Vec<&[pdfcraft_render::PageInfo]> = if self.cover && !info.pages.is_empty() {
                     std::iter::once(&info.pages[..1]).chain(info.pages[1..].chunks(2)).collect()
                 } else {
                     info.pages.chunks(2).collect()
                 };
-                for (ri, pair) in rows.into_iter().enumerate() {
+                let mut first = 0;
+                for pair in rows_of_pages {
                     let sizes: Vec<Vec2> = pair.iter().map(page_size).collect();
                     let row_w: f32 = sizes.iter().map(|v| v.x).sum::<f32>() + gap * (sizes.len() as f32 - 1.0);
                     let row_h = sizes.iter().map(|v| v.y).fold(0.0, f32::max);
-                    let mut x = if self.cover && ri == 0 { (content_w / 2.0 + gap / 2.0).max(SIDE) } else { ((content_w - row_w) / 2.0).max(SIDE) };
+                    let mut x =
+                        if self.cover && first == 0 { (content_w / 2.0 + gap / 2.0).max(SIDE) } else { ((content_w - row_w) / 2.0).max(SIDE) };
+                    let mut band = Rect::NOTHING;
                     for size in sizes {
-                        rects.push(Rect::from_min_size(pos2(x, y + (row_h - size.y) / 2.0), size));
+                        let rect = Rect::from_min_size(pos2(x, y + (row_h - size.y) / 2.0), size);
+                        band = band.union(rect);
+                        rects.push(rect);
                         x += size.x + gap;
                     }
+                    rows.push((first, rects.len(), band));
+                    first = rects.len();
                     y += row_h + gap;
                 }
             }
         }
-        rects
+        let content_h = if rects.is_empty() { 0.0 } else { y - gap + MARGIN };
+        Layout { rects, rows, content_h }
+    }
+
+    /// The document's page layout, cached: a frame rebuilds it only when the zoom, the device
+    /// scale, the content width, the layout or the document changed.
+    fn page_layout(&mut self, info: &DocInfo, content_w: f32, ppp: f32, generation: u64) -> std::sync::Arc<Layout> {
+        let key = LayoutKey {
+            zoom: self.zoom.to_bits(),
+            content_w: content_w.to_bits(),
+            ppp: ppp.to_bits(),
+            layout: self.layout,
+            cover: self.cover,
+            show_page_gaps: self.show_page_gaps,
+            rotation: self.rotation,
+            generation,
+        };
+        if let Some((k, layout)) = &self.layout_cache
+            && *k == key
+        {
+            return layout.clone();
+        }
+        let layout = std::sync::Arc::new(self.layout(info, content_w, ppp));
+        self.layout_cache = Some((key, layout.clone()));
+        layout
     }
 
     fn render_scale(&self, ppp: f32) -> f32 {
@@ -2512,6 +2646,25 @@ fn snap_to_pixels(r: Rect, ppp: f32) -> Rect {
     Rect::from_min_size(pos2(snap(r.min.x), snap(r.min.y)), r.size())
 }
 
+/// The pages in and near the viewport, from the layout's rows. Rows are laid out top to bottom
+/// with disjoint vertical bands, so the candidates are one contiguous run of rows, found by a
+/// binary search instead of walking every page of a long document each frame. The run is a
+/// superset (whole rows, expanded like the draw loop's own margin); the loop's per-page check
+/// decides what actually draws.
+fn visible_candidates(layout: &Layout, viewport: Rect, origin: Pos2, ppp: f32) -> Vec<usize> {
+    if layout.rects.is_empty() {
+        return Vec::new();
+    }
+    const NEAR: f32 = 400.0;
+    // One device pixel of slack, so a hairline row snapped onto an edge stays a candidate.
+    let slack = 1.0 / ppp.max(1.0);
+    let top = viewport.top() - origin.y - NEAR - slack;
+    let bottom = viewport.bottom() - origin.y + NEAR + slack;
+    let first = layout.rows.partition_point(|(_, _, band)| band.bottom() < top);
+    let last = layout.rows.partition_point(|(_, _, band)| band.top() <= bottom);
+    layout.rows[first..last].iter().flat_map(|&(a, b, _)| a..b).collect()
+}
+
 /// Maps between a page's coordinate spaces and the screen, including view rotation.
 ///
 /// *View space* is the page as rendered (points, y down, the document's own `/Rotate` applied);
@@ -2593,9 +2746,10 @@ impl PageXform {
         Rect::from_two_pos(self.norm_to_screen(g[0] / self.pw, g[1] / self.ph), self.norm_to_screen(g[2] / self.pw, g[3] / self.ph))
     }
 
-    /// A PDF user-space rect (crop box, document `/Rotate`) → screen rect.
+    /// A PDF user-space rect (crop box, document `/Rotate`) → screen rect. The document's
+    /// pages are untrusted, so a page past their end gives an empty rect instead of a panic.
     pub fn user_rect(&self, info: &DocInfo, page: usize, r: [f32; 4]) -> Rect {
-        let p = &info.pages[page];
+        let Some(p) = info.pages.get(page) else { return Rect::NOTHING };
         let [cx0, cy0, cx1, cy1] = p.crop;
         let (cw, ch) = ((cx1 - cx0).max(1.0), (cy1 - cy0).max(1.0));
         let norm = |x: f32, y: f32| -> (f32, f32) {
@@ -2822,6 +2976,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         }
         return;
     }
+    // In Preferences ▸ Date format, or why it can't be stamped into the PDF. Kept for the
+    // hour: the same stamp goes into everything placed this frame.
+    let (today, date_text) = app.today_stamp();
     let Some(doc) = app.session.get(app.views[index].id) else { return };
     let info = &doc.info;
     let paper = app.session.reading_colors(app.views[index].id).and_then(|c| c.params).map_or(Color32::WHITE, |p| {
@@ -2851,8 +3008,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // the user turned it off (#4035): the restrictions themselves, and Document Properties ▸
     // Security, stay as they are.
     let secured = show_secured_notice && doc.security_summary().is_some_and(|s| !(s.owner || (s.permissions.modify() && s.permissions.assemble())));
-    let repaired = !doc.repair_log().is_empty();
-    match notices(view, doc, secured, repaired, crate::sign_ui::banner(&doc.signatures), ui, &t) {
+    let repaired = doc.repaired();
+    let banner = view.sign_banner(doc);
+    match notices(view, doc, secured, repaired, banner, ui, &t) {
         #[cfg(not(target_arch = "wasm32"))]
         Some(Notice::Reload) => app.watch.reload_request = Some(view.id),
         #[cfg(target_arch = "wasm32")]
@@ -2958,7 +3116,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     }
 
     let content_w = view.content_width(info, avail.width());
-    let rects = view.layout(info, content_w, ui.ctx().pixels_per_point());
+    // The layout is cached: a frame rebuilds it only when the zoom, the layout or the document
+    // changed, and its row bands are what keeps a long document's frame from walking its pages.
+    let layout = view.page_layout(info, content_w, ui.ctx().pixels_per_point(), doc.edit_generation());
+    let rects = &layout.rects;
     // When not scrolling continuously, only one row is shown at a time: the current page, or the
     // current two-page spread (with the cover rule). These indices drive paging, which pages are
     // drawn, and the content height (#752). Empty for a document with no pages.
@@ -3099,9 +3260,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // The wheel may have turned the page above: draw the row it turned to. Measured from the old
     // row, the jump to the new page scrolled both out of view, a blank frame on every turn forward.
     let row = shown_row(view);
-    let visible_pages: Vec<usize> = if view.continuous { (0..rects.len()).collect() } else { row.clone() };
     let (y_shift, content_h) = if view.continuous {
-        (0.0, rects.iter().map(|r| r.bottom()).reduce(f32::max).map(|bottom| bottom + MARGIN).unwrap_or(0.0))
+        (0.0, layout.content_h)
     } else {
         // Only the current row scrolls into view; the content is its bounding box plus margins.
         match row.iter().filter_map(|&i| rects.get(i)).copied().reduce(Rect::union) {
@@ -3232,9 +3392,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let initials = app.initials.clone();
     let mut open_initials = false;
     let author = app.comment_prefs.author.clone();
-    let today = app.session.today();
-    // In Preferences ▸ Date format, or why it can't be stamped into the PDF.
-    let date_text = crate::date_text_for_pdf(&app.session);
+    // In Preferences ▸ Date format, or why it can't be stamped into the PDF. Kept for the
+    // hour: the same stamp goes into everything placed this frame.
     let mut refused: Option<String> = None;
     let by_line = app.session.stamp_by_line(&author);
     let mut stamp_placed = false;
@@ -3323,6 +3482,11 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         let origin = resp_rect.min - vec2(0.0, y_shift);
         let painter = ui.painter();
         let visible = viewport.translate(resp_rect.min.to_vec2());
+        // The pages the frame draws: in a continuous view, the rows in and near the viewport,
+        // found by a binary search over the layout's row bands (rows are laid out top to bottom
+        // with disjoint bands, so the candidates are one contiguous run). In a single-page or
+        // two-page view, only the current row is drawn.
+        let visible_pages: Vec<usize> = if view.continuous { visible_candidates(&layout, visible, origin, ppp) } else { row.clone() };
         let mut wanted = Vec::new();
         let mut visible_now = Vec::new();
         view.screen_rects.clear();
@@ -4238,7 +4402,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         });
         (wanted, visible_now)
     });
-    view.single_edges = visible_pages.first().copied().filter(|_| !view.continuous).map(|page| {
+    view.single_edges = row.first().copied().filter(|_| !view.continuous).map(|page| {
         // At the top once the page's top edge shows where going to a page puts it (a gap
         // below the window's top). Within a point, as for wheel paging, so layout rounding
         // can't hide an edge.
@@ -4274,7 +4438,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // for on the turn and showed blank paper until it rendered. Prefetch the rows either side,
     // as continuous scrolling does for the pages just off screen.
     if !view.continuous
-        && let (Some(&first), Some(&last)) = (visible_pages.first(), visible_pages.last())
+        && let (Some(&first), Some(&last)) = (row.first(), row.last())
     {
         let n = if view.layout == PageLayout::Single { 1 } else { 2 };
         let max_side = ui.ctx().input(|inp| inp.max_texture_side) as f32;
@@ -4800,7 +4964,7 @@ fn run_button(app: &mut PdfCraftApp, index: usize, name: &str, action: pdfcraft_
         }
         B::Alert(m) => app.notify(m),
         B::Submit(url) => app.notify_fmt(
-            "{name} submits the form to {url}; PdfCraft doesn't send form data. Save the document to keep your entries.",
+            "{name} submits the form to {url}; PDF Forge doesn't send form data. Save the document to keep your entries.",
             &[("name", name), ("url", &url)],
         ),
         B::ImportIcon => app.choose_field_image(name),
@@ -5103,7 +5267,7 @@ fn notices(
     } else if info.xfa == Some(pdfcraft_render::Xfa::Dynamic) {
         Some((
             "triangle-alert",
-            tl!("This is a dynamic XFA form, which PdfCraft can't display yet. What you see is the file's placeholder page.").to_string(),
+            tl!("This is a dynamic XFA form, which PDF Forge can't display yet. What you see is the file's placeholder page.").to_string(),
             false,
         ))
     } else if info.xfa == Some(pdfcraft_render::Xfa::Static) {
@@ -5929,6 +6093,81 @@ fn grayscale(mut img: egui::ColorImage) -> egui::ColorImage {
 
 #[cfg(test)]
 mod tests {
+    /// `n` uniform 300×400 pages, so row geometry is easy to reason about.
+    fn uniform_info(n: usize) -> DocInfo {
+        DocInfo {
+            pages: (0..n)
+                .map(|_| pdfcraft_render::PageInfo { width: 300.0, height: 400.0, label: String::new(), crop: [0.0, 0.0, 300.0, 400.0], rotation: 0 })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn visible_candidates_cover_only_the_rows_near_the_viewport() {
+        let info = uniform_info(400);
+        let mut v = DocView::new(DocId(1), &info, ViewDefaults::default());
+        let layout = v.page_layout(&info, 400.0, 1.0, 0);
+        assert_eq!(layout.rects.len(), 400);
+        assert_eq!(layout.rows.len(), 400, "one row per page in single-file layout");
+        let viewport = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
+        // A viewport in the middle: the candidates are a bounded, contiguous run around the
+        // rows in view, never the document's every page.
+        let candidates = visible_candidates(&layout, viewport, pos2(0.0, -3000.0), 1.0);
+        assert!(candidates.len() < 20, "{} candidates for 400 pages", candidates.len());
+        assert!(candidates.windows(2).all(|w| w[1] == w[0] + 1), "the candidates are contiguous");
+        assert!(!candidates.contains(&0), "the first page is far above");
+        assert!(!candidates.contains(&399), "the last page is far below");
+        // The row at the viewport's top edge is among them.
+        let at_top = layout.rows.partition_point(|(_, _, band)| band.bottom() <= 3000.0).min(399);
+        assert!(candidates.contains(&at_top));
+        // Scrolled to the top, the first pages are candidates and the last are not; at the
+        // bottom the other way round.
+        let top = visible_candidates(&layout, viewport, pos2(0.0, 0.0), 1.0);
+        assert!(top.contains(&0));
+        assert!(!top.contains(&399));
+        let bottom = visible_candidates(&layout, viewport, pos2(0.0, -(layout.content_h - 600.0)), 1.0);
+        assert!(bottom.contains(&399));
+        assert!(!bottom.contains(&0));
+        // An empty document gives none.
+        let empty = Layout { rects: Vec::new(), rows: Vec::new(), content_h: 0.0 };
+        assert!(visible_candidates(&empty, viewport, Pos2::ZERO, 1.0).is_empty());
+    }
+
+    #[test]
+    fn two_up_rows_cover_their_pages() {
+        let info = thumbnail_info(5);
+        let mut v = DocView::new(DocId(1), &info, ViewDefaults::default());
+        v.set_layout(PageLayout::TwoUp);
+        v.cover = true;
+        let layout = v.layout(&info, 400.0, 1.0);
+        // With a cover page: [0], [1, 2], [3, 4].
+        assert_eq!(layout.rows.iter().map(|(a, b, _)| b - a).collect::<Vec<_>>(), vec![1, 2, 2]);
+        let viewport = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, layout.rows[1].2.height()));
+        let seen = visible_candidates(&layout, viewport, pos2(0.0, -layout.rows[1].2.top()), 1.0);
+        assert!(seen.contains(&1) && seen.contains(&2), "the second spread's pages, both of them");
+        // The whole run is bounded: at most the spreads in view plus their prefetch margin.
+        assert!(seen.len() <= 5);
+    }
+
+    #[test]
+    fn the_page_layout_is_cached_until_what_it_depends_on_changes() {
+        let info = thumbnail_info(4);
+        let mut v = DocView::new(DocId(1), &info, ViewDefaults::default());
+        let first = v.page_layout(&info, 400.0, 1.0, 7);
+        let again = v.page_layout(&info, 400.0, 1.0, 7);
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "an unchanged document and view keep the layout");
+        // A new generation (an edit, a save, a reload) rebuilds it, as does a new content width.
+        let re_laid = v.page_layout(&info, 400.0, 1.0, 8);
+        assert!(!std::sync::Arc::ptr_eq(&first, &re_laid));
+        let wider = v.page_layout(&info, 800.0, 1.0, 8);
+        assert!(!std::sync::Arc::ptr_eq(&re_laid, &wider));
+        // So does a new layout.
+        v.set_layout(PageLayout::TwoUp);
+        let two_up = v.page_layout(&info, 800.0, 1.0, 8);
+        assert_eq!(two_up.rows.len(), 2, "two pages per row");
+    }
+
     #[test]
     fn zoom_anchor_scroll_stays_within_the_content() {
         let (content, viewport) = (vec2(1000.0, 2000.0), vec2(800.0, 600.0));
@@ -7378,7 +7617,7 @@ trailer << /Root 1 0 R >>
         v.fit_zoom(&info);
         let narrow = v.zoom;
         // The shown page fills the width between the side gutters, not centred for the wide page.
-        let shown = v.layout(&info, v.content_width(&info, 1000.0), 1.0)[0];
+        let shown = v.layout(&info, v.content_width(&info, 1000.0), 1.0).rects[0];
         assert!((shown.left() - SIDE).abs() < 1e-2 && (shown.width() - 860.0).abs() < 1e-2, "{shown:?}");
         v.current = 1;
         v.fit_zoom(&info);
@@ -7635,5 +7874,67 @@ trailer << /Root 1 0 R >>
         assert_eq!(red(&pixels, old), 0, "nothing shows where it first was");
         h.state_mut().views[0].stale_tiles.clear();
         h.state_mut().views[0].tiles.clear();
+    }
+}
+
+#[cfg(test)]
+mod kittest_pages_panel {
+    use super::*;
+
+    /// The Pages panel builds its widgets for the thumbnails in view, and a drop past the
+    /// visible rows still lands at the right place in the document.
+    #[test]
+    fn virtualized_pages_panel_keeps_drops_at_document_positions() {
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_cc| {
+            let mut app = PdfCraftApp::new();
+            let bytes = app.session.create_blank(300.0, 400.0, 200).unwrap();
+            app.open_bytes("pages-panel.pdf", None, bytes.as_ref().clone()).unwrap();
+            app.right = Some(RightPanel::Pages);
+            app
+        });
+        h.run_steps(4);
+        // Mark one page so the applied move can be checked even though blank pages look alike.
+        h.state_mut().apply_edit(pdfcraft_engine::Edit::SetPageBox {
+            pages: vec![197],
+            which: pdfcraft_engine::PageBox::Media,
+            spec: pdfcraft_engine::BoxSpec::Rect([0.0, 0.0, 301.0, 401.0]),
+        });
+        // Only the thumbnails in view are asked for.
+        assert!(h.state().views[0].thumb_demand.len() < 20, "{}", h.state().views[0].thumb_demand.len());
+        // Scroll the panel to its end, as a drag near the edge would.
+        let panel = h.state().views[0].pages_panel.expect("the panel records its area");
+        h.hover_at(panel.center());
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -100_000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(40);
+        // At the panel's end, the drop gap is the document's end — not the last drawn row's.
+        let panel = h.state().views[0].pages_panel.expect("the panel is still open");
+        h.hover_at(pos2(panel.center().x, panel.bottom() - 20.0));
+        h.run_steps(2);
+        assert_eq!(h.state().views[0].panel_gap, Some(200), "the gap after the last page");
+        // The first rows are no longer in view: they were never built this frame.
+        assert!(h.state().views[0].thumb_demand.len() < 20);
+        // Dropping a page there moves it to the end of the document.
+        let from = pos2(panel.center().x, panel.top() + 40.0);
+        let to = pos2(panel.center().x, panel.bottom() - 20.0);
+        h.hover_at(from);
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        for k in 1..=4 {
+            h.hover_at(from + (to - from) * (k as f32 / 4.0));
+            h.run_steps(1);
+        }
+        let dragged: Vec<usize> = h.state().views[0].panel_drag.clone().unwrap_or_default();
+        assert!(!dragged.is_empty(), "the drag holds a page");
+        h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        let id = h.state().views[0].id;
+        let last = h.state().session.get(id).unwrap().info.pages.last().unwrap();
+        assert_eq!((last.width, last.height), (301.0, 401.0), "the dragged page moves to the end");
     }
 }

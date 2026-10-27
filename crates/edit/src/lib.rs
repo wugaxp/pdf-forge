@@ -698,9 +698,10 @@ fn place_inside_wrapper(doc: &mut Document, page: &pdfcraft_model::Page, tag: &s
 pub fn stamp(doc: &mut Document, page: usize, tag: &str, content: Vec<u8>) -> Result<ObjRef, EditError> {
     let mut all = page_list(doc);
     check(&[page], all.len())?;
-    // `place_tagged` performs the same isolation check immediately before writing and refuses
-    // `TooDeep` there; checking here parsed the page content a second time for every stamp.
     let p = all.swap_remove(page);
+    // Refuse before adding resources: a mark that cannot be placed on top must leave the page's
+    // resources as they were too. `place_tagged` repeats the check immediately before writing.
+    check_on_top(doc, &p)?;
     add_resources(doc, &p, None, Some(&content))?;
     place_tagged(doc, &p, tag, content, false)
 }
@@ -836,12 +837,14 @@ pub fn add_header_footer(doc: &mut Document, pages: &[usize], hf: &HeaderFooter,
         let mut content = begin(MarkKind::HeaderFooter, "Header", page.view_matrix(doc)).into_bytes();
         content.extend(body);
         content.extend_from_slice(END.as_bytes());
-        // A name already there is that very font (see `free_font_name`): left as it is.
+        // A name already there is that very font (see `free_font_name`): left as it is. The
+        // resource is added after the mark is placed, so a refused mark leaves the page's
+        // resources as they were too.
+        let page = &page_list(doc)[i];
+        place(doc, page, MarkKind::HeaderFooter, content, false)?;
         if !page_fonts(doc, page).contains(resource.as_bytes()) {
             add_page_resources(doc, page, None, &[(resource.into_bytes(), base)])?;
         }
-        let page = &page_list(doc)[i];
-        place(doc, page, MarkKind::HeaderFooter, content, false)?;
         if let Some(Some(m)) = shrinks.get(k) {
             let cm = format!("{} cm\n", m.map(matrix_number).join(" "));
             let page = &page_list(doc)[i];

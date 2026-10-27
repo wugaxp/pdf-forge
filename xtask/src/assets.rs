@@ -376,7 +376,7 @@ pub fn models(args: &[String]) -> Result<()> {
 
 /// The credits shipped beside the models (their licences require attribution).
 fn models_attribution(m: &Manifest) -> String {
-    let mut s = String::from("PdfCraft's text recognition (Scan & OCR) uses these models, unmodified.\n");
+    let mut s = String::from("PDF Forge's text recognition (Scan & OCR) uses these models, unmodified.\n");
     for f in m.fetched.iter().filter(|f| f.kind == "model") {
         let _ = write!(
             s,
@@ -462,6 +462,7 @@ mod tests {
     fn models_attribution_credits_every_model() {
         let m = load(&root()).unwrap();
         let text = models_attribution(&m);
+        assert!(text.starts_with("PDF Forge's text recognition (Scan & OCR) uses these models, unmodified.\n"), "{}", text);
         let models: Vec<_> = m.fetched.iter().filter(|f| f.kind == "model").collect();
         assert!(!models.is_empty());
         for f in models {

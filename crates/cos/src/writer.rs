@@ -200,6 +200,9 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
     if doc.stream_limited() {
         return Err(CosError::ReadOnlyLimit);
     }
+    if let Some(e) = doc.allocation_error() {
+        return Err(e.clone());
+    }
     // Reconstructed files have no chain to append to; added or removed encryption must
     // rewrite every object; redaction must not leave the old revision behind. All need a full save.
     if doc.reconstructed() || doc.encryption_changed() || doc.full_save_required() {
@@ -253,7 +256,7 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
     } else {
         trailer.set(b"Size".to_vec(), Object::Int(size as i64));
         let xref_at = base + out.len() as u64;
-        write_xref_table(&mut out, &offsets, prev.is_none());
+        write_xref_table(&mut out, &offsets, prev.is_none())?;
         out.extend_from_slice(b"trailer\n");
         write_dict(&trailer, &mut out);
         let _ = write!(out, "\nstartxref\n{xref_at}\n%%EOF\n");
@@ -271,6 +274,9 @@ pub fn write_incremental(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, 
 pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosError> {
     if doc.stream_limited() {
         return Err(CosError::ReadOnlyLimit);
+    }
+    if let Some(e) = doc.allocation_error() {
+        return Err(e.clone());
     }
     // A full traversal must not fill the editor's shared caches (which undo snapshots also
     // own). Parsed objects and decoded object streams are temporary working data here.
@@ -391,7 +397,7 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
         let offsets: BTreeMap<u32, (u64, u16, bool)> =
             rows.iter().filter_map(|(n, r)| if let Row::InFile(o, g) = r { Some((*n, (*o, *g, true))) } else { None }).collect();
         let xref_at = out.len();
-        write_xref_table(&mut out, &offsets, true);
+        write_xref_table(&mut out, &offsets, true)?;
         out.extend_from_slice(b"trailer\n");
         write_dict(&trailer, &mut out);
         let _ = write!(out, "\nstartxref\n{xref_at}\n%%EOF\n");
@@ -521,8 +527,21 @@ fn renumber(o: &Object, map: &HashMap<ObjRef, u32>) -> Object {
     }
 }
 
-/// Classic xref table with one subsection per run of consecutive numbers (§7.5.4).
-fn write_xref_table(out: &mut Vec<u8>, offsets: &BTreeMap<u32, (u64, u16, bool)>, include_zero: bool) {
+/// Classic xref table with one subsection per run of consecutive numbers (§7.5.4). Each row
+/// holds its offset in a fixed 10-digit field (§7.5.4, Table 17): a file larger than
+/// 9,999,999,999 bytes cannot be written as a table, and writing one anyway would shift every
+/// following row and corrupt the whole cross-reference section, so this refuses instead.
+const XREF_TABLE_OFFSET_LIMIT: u64 = 9_999_999_999;
+
+fn write_xref_table(out: &mut Vec<u8>, offsets: &BTreeMap<u32, (u64, u16, bool)>, include_zero: bool) -> Result<(), CosError> {
+    if let Some((num, (off, _, _))) = offsets.iter().find(|(_, (off, _, _))| *off > XREF_TABLE_OFFSET_LIMIT) {
+        return Err(CosError::Syntax {
+            offset: 0,
+            detail: format!(
+                "object {num} sits at offset {off}, past the 10-digit cross-reference field; save with object streams (a cross-reference stream) instead"
+            ),
+        });
+    }
     out.extend_from_slice(b"xref\n");
     let mut all: Vec<(u32, (u64, u16, bool))> = offsets.iter().map(|(k, v)| (*k, *v)).collect();
     if include_zero {
@@ -535,7 +554,7 @@ fn write_xref_table(out: &mut Vec<u8>, offsets: &BTreeMap<u32, (u64, u16, bool)>
     // (a missing `/ID`, or a caller edit of the trailer) is still written.
     if all.is_empty() {
         let _ = writeln!(out, "0 0");
-        return;
+        return Ok(());
     }
     let mut i = 0;
     while i < all.len() {
@@ -550,6 +569,7 @@ fn write_xref_table(out: &mut Vec<u8>, offsets: &BTreeMap<u32, (u64, u16, bool)>
         }
         i = j + 1;
     }
+    Ok(())
 }
 
 /// A cross-reference stream section (§7.5.8) that takes object number `num`, ending the file.
@@ -715,6 +735,22 @@ mod tests {
         assert!(reread(&mut reader, dict, false).is_ok());
         assert!(reread(&mut reader, dict, true).is_err(), "a dictionary where a stream was traversed");
         assert!(reread(&mut reader, ObjRef::new(9999, 0), false).is_err(), "nothing where an object was traversed");
+    }
+
+    /// A classic table's offset field is 10 digits wide: offsets past 9,999,999,999 must
+    /// fail the save instead of writing rows that misalign everything after them.
+    #[test]
+    fn a_classic_xref_table_refuses_offsets_past_the_ten_digit_field() {
+        let mut offsets = BTreeMap::from([(1, (9_999_999_999_u64, 0_u16, true))]);
+        let mut out = Vec::new();
+        write_xref_table(&mut out, &offsets, true).unwrap();
+        assert!(String::from_utf8_lossy(&out).contains("\n9999999999 00000 n \n"), "{}", String::from_utf8_lossy(&out));
+
+        offsets.insert(2, (XREF_TABLE_OFFSET_LIMIT + 1, 0, true));
+        let mut out = Vec::new();
+        let result = write_xref_table(&mut out, &offsets, true);
+        assert!(matches!(result, Err(CosError::Syntax { ref detail, .. }) if detail.contains("10-digit")), "{result:?}");
+        assert!(out.is_empty(), "no table is written at all");
     }
 
     #[test]

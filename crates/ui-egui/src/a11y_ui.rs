@@ -46,14 +46,64 @@ impl Default for A11yOptions {
 #[derive(Clone, Debug, Default)]
 pub struct A11yState {
     pub report: Option<(DocId, Report)>,
+    /// The edit generation the report was computed from. A report of an older generation
+    /// describes the document as it was before its edits, and the panel says so.
+    pub report_generation: Option<u64>,
     /// The prior check of the same document with the same checker options.
     pub previous: Option<(DocId, Report)>,
     pub options: Option<Options>,
+    /// A check is running (on the worker thread; the panel shows it).
+    pub checking: bool,
+    /// The saved report was asked for while the check that produces it is still running.
+    pub(crate) report_when_done: bool,
     /// Collapsed categories and expanded rules.
     pub collapsed: BTreeSet<Category>,
     pub expanded: BTreeSet<Rule>,
     /// The rule whose explanation is showing.
     pub explain: Option<Rule>,
+}
+
+/// At most this many pages may be checked on the UI thread (tests and wasm run inline whatever
+/// the count). Checking reads every page's text and tags, and a small file can hold hundreds of
+/// pages.
+const INLINE_A11Y_PAGES: usize = 8;
+
+/// A document as a check read it: its bytes and edit generation. A result computed from
+/// anything else describes pages as they were, and is dropped instead of shown.
+pub(crate) struct Anchor {
+    bytes: std::sync::Arc<Vec<u8>>,
+    generation: u64,
+}
+
+impl Anchor {
+    fn of(doc: &pdfcraft_engine::Document) -> Self {
+        Self { bytes: doc.bytes.clone(), generation: doc.edit_generation() }
+    }
+
+    /// Whether `doc` is still the document this anchor was taken from (edited, saved, reloaded
+    /// and reopened all give it new bytes or a new generation).
+    fn holds(&self, doc: &pdfcraft_engine::Document) -> bool {
+        self.generation == doc.edit_generation() && std::sync::Arc::ptr_eq(&self.bytes, &doc.bytes)
+    }
+}
+
+/// An accessibility check running off the UI thread. Checking a large document reads every
+/// page's text and tags; doing that while painting froze the window.
+pub struct A11yJob {
+    rx: std::sync::mpsc::Receiver<Option<Report>>,
+    id: DocId,
+    options: Options,
+    /// The document as the worker read it: its result is dropped if it is not the same
+    /// document any more when it arrives.
+    anchor: Anchor,
+}
+
+/// The check itself, off the UI thread: the editor's document model is not shareable, so the
+/// worker reopens the working file and checks that. `None` when it could not be read.
+fn check_report(bytes: std::sync::Arc<Vec<u8>>, name: String, password: Option<String>, options: Options) -> Option<Report> {
+    let mut session = pdfcraft_engine::Session::new();
+    let doc = session.open(name, None, bytes, password.as_deref()).ok()?;
+    session.get(doc)?.accessibility_check(&options)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,21 +210,27 @@ fn status_icon(t: &Tokens, s: Status) -> (&'static str, egui::Color32) {
 }
 
 /// The Accessibility Checker panel.
-pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut A11yState, doc: DocId) -> Option<PanelAction> {
+pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut A11yState, doc: DocId, generation: u64) -> Option<PanelAction> {
     let mut action = None;
     let Some((_, report)) = state.report.as_ref().filter(|(d, _)| *d == doc) else {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.add(icons::image("accessibility", 32.0, t.text_faint));
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(tl!("This document hasn't been checked yet.")).color(t.text_muted));
-            ui.add_space(6.0);
-            if widgets::pill_button(ui, tl!("Check for accessibility"), true).clicked() {
-                action = Some(PanelAction::Options);
+            if state.checking {
+                ui.label(egui::RichText::new(tl!("Checking…")).color(t.text_muted));
+            } else {
+                ui.label(egui::RichText::new(tl!("This document hasn't been checked yet.")).color(t.text_muted));
+                ui.add_space(6.0);
+                if widgets::pill_button(ui, tl!("Check for accessibility"), true).clicked() {
+                    action = Some(PanelAction::Options);
+                }
             }
         });
         return action;
     };
+    // An older report describes the document as it was when it was checked, not as it stands.
+    let stale = state.report_generation.is_none_or(|g| g != generation);
     let failed = report.count(Status::Failed);
     let manual = report.count(Status::Manual);
     let skipped = report.count(Status::Skipped);
@@ -193,6 +249,9 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut A11yState, doc: D
             })
             .color(t.text_muted),
         );
+        if state.checking {
+            ui.label(egui::RichText::new(tl!("Checking…")).small().color(t.text_muted));
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if widgets::pill_button(ui, tl!("Check again"), false).clicked() {
                 action = Some(PanelAction::CheckAgain);
@@ -202,6 +261,11 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut A11yState, doc: D
             }
         });
     });
+    if stale {
+        ui.label(
+            egui::RichText::new(tl!("The document has changed since it was checked. Check again for current results.")).small().color(t.text_muted),
+        );
+    }
     if failed > 0 && manual > 0 {
         ui.label(egui::RichText::new(format!("{}: {manual}", tl!("Needs manual check"))).small().color(t.text_muted));
     }
@@ -356,6 +420,7 @@ impl PdfCraftApp {
         self.a11y.previous = None;
         self.a11y.options = Some(options);
         self.a11y.report = Some((id, report));
+        self.a11y.report_generation = Some(doc.edit_generation());
         self.right = Some(RightPanel::Accessibility);
         self.notify(if failed == 0 {
             tl!("No untagged content was found.").to_string()
@@ -373,7 +438,9 @@ impl PdfCraftApp {
         }
     }
 
-    /// Run the full check with the current options and show the results.
+    /// Run the full check with the current options and show the results. A document of many
+    /// pages is checked on a worker thread and lands through [`Self::poll_a11y`], so the
+    /// window stays responsive; a check of a few pages is done before the frame is out.
     pub fn run_accessibility_check(&mut self) {
         let Some((_, id)) = self.active_ids() else { return };
         let Some(doc) = self.session.get(id) else { return };
@@ -383,12 +450,46 @@ impl PdfCraftApp {
         let to = o.to.clamp(1, doc.info.pages.len().max(1));
         let from = o.from.clamp(1, to);
         let options = Options { rules: o.rules.clone(), pages: (!o.all_pages).then(|| (from - 1..to).collect()) };
-        let Some(report) = doc.accessibility_check(&options) else {
+        if !doc.can_accessibility_check() {
             self.notify_tr("This document can't be checked: it couldn't be read for editing");
             return;
-        };
+        }
+        self.right = Some(RightPanel::Accessibility);
+        let pages = options.pages.as_ref().map_or(doc.info.pages.len(), Vec::len);
+        let inline = cfg!(target_arch = "wasm32") || self.run_inline || pages <= INLINE_A11Y_PAGES;
+        if inline {
+            match doc.accessibility_check(&options) {
+                Some(report) => self.install_a11y_report(id, options, report),
+                None => self.notify_tr("This document can't be checked: it couldn't be read for editing"),
+            }
+            return;
+        }
+        // A check that is still running is replaced: the newer request wins, and the older
+        // worker's answer is dropped as stale when it arrives.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let (work_bytes, work_name, work_password, work_options) = (doc.bytes.clone(), doc.name.clone(), doc.password.clone(), options.clone());
+        let spawned = std::thread::Builder::new().name("pdfcraft-a11y".into()).spawn(move || {
+            let report = check_report(work_bytes, work_name, work_password, work_options);
+            // The receiver may be gone (a newer request replaced this one): nothing to report.
+            let _ = tx.send(report);
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+        if spawned.is_err() {
+            self.notify_tr("Could not start the accessibility check");
+            return;
+        }
+        self.a11y_job = Some(A11yJob { rx, id, options, anchor: Anchor::of(doc) });
+        self.a11y.checking = true;
+    }
+
+    /// Put a finished check in the panel: the current report becomes the previous one when the
+    /// checker options did not change, the summary is announced, and the saved report is
+    /// written when it was asked for.
+    fn install_a11y_report(&mut self, id: DocId, options: Options, mut report: Report) {
         // Rules skipped by hand stay skipped when checking again.
-        let mut report = report;
         for r in report.results.iter_mut().filter(|r| self.a11y_skipped.contains(&(id, r.rule))) {
             r.status = Status::Skipped;
             r.findings.clear();
@@ -400,6 +501,8 @@ impl PdfCraftApp {
             if self.a11y.options.as_ref() == Some(&options) { self.a11y.report.take().filter(|(prior_id, _)| *prior_id == id) } else { None };
         self.a11y.options = Some(options);
         self.a11y.report = Some((id, report));
+        self.a11y.report_generation = self.session.get(id).map(|d| d.edit_generation());
+        self.a11y.checking = false;
         self.right = Some(RightPanel::Accessibility);
         self.notify(if failed == 0 && manual == 0 && skipped == 0 {
             tl!("The checker found no problems in this document.").to_string()
@@ -415,8 +518,46 @@ impl PdfCraftApp {
         } else {
             format!("{}: {skipped}", tl!("Skipped"))
         });
-        if self.a11y_options.create_report {
+        if self.a11y_options.create_report || std::mem::take(&mut self.a11y.report_when_done) {
             self.show_accessibility_report();
+        }
+    }
+
+    /// Install the result of a background check, if it has arrived and still describes the
+    /// document it was asked about. Called once a frame while a check is pending.
+    pub(crate) fn poll_a11y(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let answer = match self.a11y_job.as_ref() {
+            Some(job) => job.rx.try_recv(),
+            None => return,
+        };
+        match answer {
+            Ok(report) => {
+                let job = self.a11y_job.take();
+                if let (Some(job), Some(report)) = (job, report)
+                    && let Some(doc) = self.session.get(job.id)
+                    && job.anchor.holds(doc)
+                {
+                    self.install_a11y_report(job.id, job.options, report);
+                } else {
+                    // The document was edited, saved, reloaded or closed while the check ran:
+                    // its answer describes pages as they were, so it is dropped, and the
+                    // report it was to produce with it.
+                    self.a11y.checking = false;
+                    self.a11y.report_when_done = false;
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                // The worker is gone without an answer (it could not be started, or it could
+                // not reopen the file): the check is over, with nothing to show.
+                self.a11y_job = None;
+                self.a11y.checking = false;
+            }
         }
     }
 
@@ -427,6 +568,8 @@ impl PdfCraftApp {
             let create = std::mem::replace(&mut self.a11y_options.create_report, false);
             self.run_accessibility_check();
             self.a11y_options.create_report = create;
+            // The check is still running on the worker thread: write the report when it lands.
+            self.a11y.report_when_done |= self.a11y.checking;
         }
         let Some((_, report)) = self.a11y.report.as_ref().filter(|(d, _)| *d == id) else { return };
         let Some(doc) = self.session.get(id) else { return };
@@ -665,5 +808,171 @@ impl PdfCraftApp {
         if !edits.is_empty() {
             self.apply_edit(pdfcraft_engine::Edit::Batch { label: "Set alternate text".into(), edits });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{A11yJob, INLINE_A11Y_PAGES, Options, check_report};
+    use crate::PdfCraftApp;
+
+    /// `n` pages of one word each: small on disk, but every page is work for a check, which
+    /// reads every page's text and tags.
+    fn pages(n: usize) -> Vec<u8> {
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!("<< /Type /Pages /Count {n} /Kids [{}] >>", (0..n).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" ")),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        for i in 0..n {
+            let content = format!("BT /F1 18 Tf 72 700 Td (Page {}) Tj ET", i + 1);
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                5 + 2 * i
+            ));
+            objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()));
+        }
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for o in offsets {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        out
+    }
+
+    fn app_with(n: usize) -> PdfCraftApp {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("a11y.pdf", None, pages(n)).unwrap();
+        app
+    }
+
+    #[test]
+    fn a_few_pages_are_checked_before_the_frame_is_out() {
+        let mut app = app_with(2);
+        app.run_accessibility_check();
+        let id = app.views[0].id;
+        assert!(app.a11y_job.is_none(), "no worker for a document of few pages");
+        assert!(!app.a11y.checking, "done in the frame that asked");
+        assert!(app.a11y.report.as_ref().is_some_and(|(d, _)| *d == id), "the report is in");
+        assert_eq!(app.a11y.report_generation, Some(app.session.get(id).unwrap().edit_generation()));
+        // A check of the same document with the same options keeps the older one to compare.
+        assert!(app.a11y.previous.is_none(), "nothing was checked before");
+        app.run_accessibility_check();
+        assert!(app.a11y.previous.is_some(), "the first check became the previous one");
+    }
+
+    #[test]
+    fn a_many_page_document_is_checked_off_the_ui_thread() {
+        const { assert!(INLINE_A11Y_PAGES < 20) };
+        let mut app = app_with(20);
+        app.run_accessibility_check();
+        assert!(app.a11y.report.is_none(), "still running: not on the UI thread");
+        assert!(app.a11y.checking, "the panel shows the check is running");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.a11y.report.is_none() {
+            app.poll_a11y();
+            assert!(std::time::Instant::now() < deadline, "the check never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let id = app.views[0].id;
+        assert!(app.a11y_job.is_none(), "the job is done");
+        assert!(!app.a11y.checking);
+        assert_eq!(app.a11y.report_generation, Some(app.session.get(id).unwrap().edit_generation()));
+    }
+
+    /// A result computed from anything but the document as it stands (edited, saved, reloaded
+    /// and reopened all give it new bytes or a new generation) is dropped, not shown.
+    #[test]
+    fn a_result_that_arrives_after_the_document_changed_is_dropped() {
+        let mut app = app_with(2);
+        let id = app.views[0].id;
+        let (bytes, generation) = {
+            let doc = app.session.get(id).unwrap();
+            (doc.bytes.clone(), doc.edit_generation())
+        };
+        let options = Options::default();
+        let report = check_report(bytes.clone(), "a11y.pdf".into(), None, options.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(report).unwrap();
+        // The document was edited while the check ran, so the anchor no longer holds.
+        app.a11y_job = Some(A11yJob { rx, id, options, anchor: super::Anchor { bytes, generation: generation + 1 } });
+        app.a11y.checking = true;
+        app.poll_a11y();
+        assert!(app.a11y.report.is_none(), "the stale result is not shown");
+        assert!(!app.a11y.checking, "the check is over either way");
+        assert!(app.a11y_job.is_none());
+    }
+
+    #[test]
+    fn a_result_for_the_document_as_it_stands_is_installed() {
+        let mut app = app_with(2);
+        let id = app.views[0].id;
+        let (bytes, generation) = {
+            let doc = app.session.get(id).unwrap();
+            (doc.bytes.clone(), doc.edit_generation())
+        };
+        let options = Options::default();
+        let report = check_report(bytes.clone(), "a11y.pdf".into(), None, options.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(report).unwrap();
+        app.a11y_job = Some(A11yJob { rx, id, options, anchor: super::Anchor { bytes, generation } });
+        app.a11y.checking = true;
+        app.poll_a11y();
+        assert!(app.a11y.report.as_ref().is_some_and(|(d, _)| *d == id), "the report landed");
+        assert!(!app.a11y.checking);
+        assert_eq!(app.a11y.report_generation, Some(generation));
+    }
+
+    #[test]
+    fn an_edit_marks_the_report_stale() {
+        let mut app = app_with(2);
+        app.run_accessibility_check();
+        let id = app.views[0].id;
+        assert_eq!(app.a11y.report_generation, Some(app.session.get(id).unwrap().edit_generation()));
+        assert!(app.apply_edit_in(id, pdfcraft_engine::Edit::InsertBlankPage { at: 1, width: 200.0, height: 100.0 }));
+        assert_ne!(
+            app.a11y.report_generation,
+            Some(app.session.get(id).unwrap().edit_generation()),
+            "the report now describes the document as it was"
+        );
+    }
+
+    /// A second document checked does not take the first document's report with it.
+    #[test]
+    fn a_report_stays_with_its_document() {
+        let mut app = app_with(2);
+        app.run_accessibility_check();
+        let first = app.views[0].id;
+        app.open_bytes("other.pdf", None, pages(2)).unwrap();
+        let second = app.views[1].id;
+        assert_ne!(first, second);
+        // The panel filters by document: the first document's report is not the second's.
+        assert!(app.a11y.report.as_ref().is_some_and(|(d, _)| *d == first));
+        assert!(!app.a11y.checking);
+        assert_eq!(app.a11y.report_generation, Some(app.session.get(first).unwrap().edit_generation()));
+    }
+
+    #[test]
+    fn the_worker_reports_a_document_it_cannot_reopen_as_over() {
+        let mut app = app_with(2);
+        let id = app.views[0].id;
+        // A worker that answers None (the file could not be reopened for checking) ends the
+        // check without a report instead of holding the panel in its progress state.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(None).unwrap();
+        let options = Options::default();
+        app.a11y_job = Some(A11yJob { rx, id, options, anchor: super::Anchor { bytes: std::sync::Arc::new(Vec::new()), generation: 0 } });
+        app.a11y.checking = true;
+        app.poll_a11y();
+        assert!(app.a11y_job.is_none());
+        assert!(!app.a11y.checking, "no report, but not stuck checking either");
     }
 }

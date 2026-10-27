@@ -29,7 +29,7 @@ use hayro::hayro_interpret::{InterpreterSettings, InterpreterWarning};
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::AlphaColor;
 use hayro::vello_cpu::color::palette::css::{TRANSPARENT, WHITE};
-use hayro::{RenderCache, RenderSettings, render_into, render_size};
+use hayro::{RenderCache, RenderCacheStores, RenderSettings, render_into, render_size};
 
 use crate::{Pixels, ReadingColors};
 
@@ -395,74 +395,153 @@ fn render_page<'a>(
 /// A whole page rendered at one scale, kept by a worker so the next tile of that page copies
 /// pixels instead of interpreting the page again. Small enough to be worth its memory.
 struct Surface {
-    key: (usize, u32, bool, bool),
+    key: SurfaceKey,
     width: u32,
     height: u32,
     pixels: Pixels,
 }
 
+/// What a surface is kept by: its page, and the kind of rendering it holds. Not the request's
+/// tag beyond its print bit: two tags rendering the same page the same way share pixels.
+type SurfaceKey = (usize, u32, bool, bool);
+
 /// Largest whole-page surface cached per worker (16 MB). A tiled page is usually much larger;
 /// those keep the ordinary per-tile path.
 const MAX_SURFACE_PIXELS: u64 = 4_000_000;
+/// Whole-page surfaces kept per worker (or by [`PageRenderer`]): the canvas alternates between
+/// a few pages and scales, and one slot re-rendered the whole page on every alternation. The
+/// pixel budget still bounds the cache, whatever arrives.
+const MAX_SURFACES: usize = 2;
+/// How many keys a [`SurfaceCache`] remembers tile requests for. A forgotten count only delays
+/// building a surface.
+const MAX_TILE_KEYS: usize = 32;
+
+/// Tile requests of one page and scale before its whole-page surface is rendered. Each tile
+/// render interprets the page again, so one surface answers every later tile as a copy; but a
+/// single tiny tile of a large page must never cost a full-page render — the render would cost
+/// far more than the tile. [`SurfaceCache::worth_building`] builds at once for a tile covering
+/// a quarter of the page: the full render then costs about what four such tiles cost anyway.
+const SURFACE_PAYBACK_TILES: u32 = 2;
+
+/// Whole-page surfaces kept by one worker (or by [`PageRenderer`]), most recently used first,
+/// and the tile requests seen for pages no surface is kept for yet.
+struct SurfaceCache {
+    surfaces: Vec<Surface>,
+    tile_hits: Vec<(SurfaceKey, u32)>,
+}
+
+impl SurfaceCache {
+    fn new() -> Self {
+        Self { surfaces: Vec::new(), tile_hits: Vec::new() }
+    }
+
+    /// The tile copied out of the cached surface for `key`, when one holds it. The surface
+    /// becomes the most recently used.
+    fn copy(&mut self, key: SurfaceKey, tile: Tile) -> Option<Output> {
+        let at = self.surfaces.iter().position(|s| s.key == key)?;
+        let out = tile_from_surface(&self.surfaces[at], tile)?;
+        let used = self.surfaces.remove(at);
+        self.surfaces.insert(0, used);
+        Some(out)
+    }
+
+    /// Whether this tile should be answered by rendering the whole page once for `key` rather
+    /// than as its own render: when the tile already covers a quarter of the page (the full
+    /// render costs about what four such tiles cost), or from the second tile request of the
+    /// same page and scale (one surface answers that page's tiles from then on).
+    fn worth_building(&mut self, key: SurfaceKey, tile: Tile, page_pixels: u64) -> bool {
+        if self.surfaces.iter().any(|s| s.key == key) {
+            // Already built: the copy above failed for want of memory, and rendering the page
+            // again would fail the same way.
+            return false;
+        }
+        let hits = match self.tile_hits.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, n)) => {
+                *n = n.saturating_add(1);
+                *n
+            }
+            None => {
+                if self.tile_hits.len() >= MAX_TILE_KEYS {
+                    self.tile_hits.remove(0);
+                }
+                self.tile_hits.push((key, 1));
+                1
+            }
+        };
+        let tile_pixels = u64::from(tile.w.clamp(1, 4096)) * u64::from(tile.h.clamp(1, 4096));
+        tile_pixels * 4 >= page_pixels || hits >= SURFACE_PAYBACK_TILES
+    }
+
+    /// Keep the whole page rendered for `key`, most recently used first, within [`MAX_SURFACES`]
+    /// surfaces and [`MAX_SURFACE_PIXELS`] pixels together.
+    fn insert(&mut self, key: SurfaceKey, width: u32, height: u32, pixels: Pixels) {
+        self.surfaces.retain(|s| s.key != key);
+        self.surfaces.insert(0, Surface { key, width, height, pixels });
+        while self.surfaces.len() > 1
+            && (self.surfaces.len() > MAX_SURFACES
+                || self.surfaces.iter().map(|s| u64::from(s.width) * u64::from(s.height)).sum::<u64>() > MAX_SURFACE_PIXELS)
+        {
+            self.surfaces.pop();
+        }
+    }
+}
 
 fn tile_from_surface(surface: &Surface, tile: Tile) -> Option<Output> {
     let (tw, th) = (tile.w.clamp(1, 4096), tile.h.clamp(1, 4096));
     let mut pixels = Pixels::zeroed(tw as usize, th as usize)?;
     let src = &*surface.pixels;
     let dst = pixels.bytes_mut();
-    for row in 0..th {
-        let sy = tile.y.saturating_add(row);
-        if sy >= surface.height {
+    let (src_w, src_h) = (surface.width as usize, surface.height as usize);
+    // Row-wise contiguous copies, one per row rather than one per pixel. Columns the tile
+    // hangs past the page's right edge stay zeroed, as do rows past its bottom.
+    let cols = src_w.saturating_sub(tile.x as usize).min(tw as usize);
+    for row in 0..th as usize {
+        let sy = (tile.y as usize).saturating_add(row);
+        if sy >= src_h {
             break;
         }
-        for col in 0..tw {
-            let sx = tile.x.saturating_add(col);
-            if sx >= surface.width {
-                break;
-            }
-            let si = ((sy as usize * surface.width as usize) + sx as usize) * 4;
-            let di = ((row as usize * tw as usize) + col as usize) * 4;
-            if let (Some(s), Some(d)) = (src.get(si..si + 4), dst.get_mut(di..di + 4)) {
-                d.copy_from_slice(s);
-            }
+        let si = (sy * src_w + tile.x as usize) * 4;
+        let di = row * tw as usize * 4;
+        if let (Some(s), Some(d)) = (src.get(si..si + cols * 4), dst.get_mut(di..di + cols * 4)) {
+            d.copy_from_slice(s);
         }
     }
     Some((tw, th, pixels, None))
 }
 
-/// Render a tile, reusing a whole-page surface when one is already cached (or is cheap enough
-/// to build once). Falls back to the ordinary tile path for pages beyond [`MAX_SURFACE_PIXELS`].
+/// Render a tile, reusing a whole-page surface when one is already cached (or is worth
+/// rendering once for the tiles to come). Falls back to the ordinary tile path for pages
+/// beyond [`MAX_SURFACE_PIXELS`].
 fn render_with_surface<'a>(
     pdf: &'a Pdf,
     cache: &RenderCache<'a>,
     settings: &InterpreterSettings,
     config: &RenderConfig,
     req: RenderRequest,
-    surface: &mut Option<Surface>,
+    surfaces: &mut SurfaceCache,
 ) -> Result<Output, (String, bool)> {
     let Some(tile) = req.tile.filter(|_| req.kind == RequestKind::Pixels) else {
         return render_page(pdf, cache, settings, config, req);
     };
     let key = (req.page, req.scale.to_bits(), req.preview, req.tag & PRINT_TAG != 0);
-    if let Some(s) = surface.as_ref().filter(|s| s.key == key)
-        && let Some(out) = tile_from_surface(s, tile)
-    {
+    if let Some(out) = surfaces.copy(key, tile) {
         return Ok(out);
     }
-    let fits = pdf.pages().get(req.page).is_some_and(|page| {
+    // Tiles are bounded by construction, so the page itself may be arbitrarily large; only one
+    // within `MAX_SURFACE_PIXELS` (and the renderer's side caps) becomes a surface.
+    let (fits, page_pixels) = pdf.pages().get(req.page).map_or((false, 0), |page| {
         let (w, h) = page.render_dimensions();
         let scale = req.scale.clamp(0.01, 400.0);
         let fw = device_pixels(w, scale);
         let fh = device_pixels(h, scale);
-        fw <= MAX_SIDE as u32 && fh <= MAX_SIDE as u32 && u64::from(fw) * u64::from(fh) <= MAX_SURFACE_PIXELS
+        let pixels = u64::from(fw) * u64::from(fh);
+        (fw <= MAX_SIDE as u32 && fh <= MAX_SIDE as u32 && pixels <= MAX_SURFACE_PIXELS, pixels)
     });
-    if fits {
+    if fits && surfaces.worth_building(key, tile, page_pixels) {
         let full = RenderRequest { tile: None, ..req };
         if let Ok((w, h, pixels, None)) = render_page(pdf, cache, settings, config, full) {
-            *surface = Some(Surface { key, width: w, height: h, pixels });
-            if let Some(s) = surface.as_ref()
-                && let Some(out) = tile_from_surface(s, tile)
-            {
+            surfaces.insert(key, w, h, pixels);
+            if let Some(out) = surfaces.copy(key, tile) {
                 return Ok(out);
             }
         }
@@ -509,14 +588,31 @@ pub struct PageRenderer {
     pdf: Option<Pdf>,
     settings: InterpreterSettings,
     stats: RenderStats,
-    surface: Option<Surface>,
+    surfaces: SurfaceCache,
+    /// This document's render caches. A `RenderCache` borrows its document (its fonts hold it),
+    /// so one cannot live here beside the `Pdf` it would borrow — a self-reference safe Rust
+    /// cannot express — and every render builds a fresh cache instead. What carries across
+    /// renders is the caches' [`RenderCacheStores`]: decoded images, colour spaces and ICC
+    /// profiles read once for the document ([`decoded_image_decodes`](Self::decoded_image_decodes)
+    /// counts the reads). Fonts and glyph outlines are rebuilt per render. The stores key on
+    /// positions and contents in the file, which never changes here (the panic re-parse reads
+    /// the same bytes), so their hits stay correct for the renderer's whole life.
+    stores: RenderCacheStores,
 }
 
 impl PageRenderer {
     pub fn new(bytes: Arc<Vec<u8>>, config: RenderConfig) -> Self {
         let pdf = parse(&bytes, config.password.as_deref());
         let settings = config.settings();
-        Self { bytes, config, pdf, settings, stats: RenderStats { parser_builds: 1, ..RenderStats::default() }, surface: None }
+        Self {
+            bytes,
+            config,
+            pdf,
+            settings,
+            stats: RenderStats { parser_builds: 1, ..RenderStats::default() },
+            surfaces: SurfaceCache::new(),
+            stores: RenderCacheStores::new(),
+        }
     }
 
     pub fn page_count(&self) -> usize {
@@ -526,6 +622,12 @@ impl PageRenderer {
     /// Snapshot the work counters collected by this renderer.
     pub fn stats(&self) -> RenderStats {
         self.stats
+    }
+
+    /// How many images this renderer has decoded (its stores' misses): diagnostics and bench
+    /// hooks — a count that stops growing says later renders reuse the decoded images.
+    pub fn decoded_image_decodes(&self) -> usize {
+        self.stores.decoded_image_decodes()
     }
 
     /// Extract one page for statistics, with semantic exclusions. Never rasterizes or panics.
@@ -555,14 +657,14 @@ impl PageRenderer {
         let Some(pdf) = self.pdf.as_ref() else {
             return finish(req, start, Err(("the document could not be parsed".into(), false)), Vec::new());
         };
-        let cache = RenderCache::new();
+        let cache = self.stores.new_cache();
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let settings = warning_settings(&self.settings, warnings.clone());
-        let r = render_with_surface(pdf, &cache, &settings, &self.config, req, &mut self.surface);
+        let r = render_with_surface(pdf, &cache, &settings, &self.config, req, &mut self.surfaces);
         let warnings = take_warnings(&warnings);
         if matches!(r, Err((_, true))) {
             self.pdf = parse(&self.bytes, self.config.password.as_deref());
-            self.surface = None;
+            self.surfaces = SurfaceCache::new();
             self.stats.parser_builds += 1;
         }
         finish(req, start, r, warnings)
@@ -1149,7 +1251,7 @@ fn worker(
     loop {
         let reset_result = {
             let parsed = std::cell::OnceCell::new();
-            let mut surface: Option<Surface> = None;
+            let mut surfaces = SurfaceCache::new();
             loop {
                 let (bytes, config, generation) = {
                     let source = lock(&source);
@@ -1348,7 +1450,7 @@ fn worker(
                         panic!("injected page panic");
                     }
                     match pdf {
-                        Some(pdf) => render_with_surface(pdf, cache, &settings, &config, req, &mut surface),
+                        Some(pdf) => render_with_surface(pdf, cache, &settings, &config, req, &mut surfaces),
                         None => Err(("the document could not be parsed".into(), false)),
                     }
                 }))
@@ -6949,6 +7051,113 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    /// One tiny tile of a page is rendered on its own: rendering the whole page for it would
+    /// cost far more than the tile. But tiles a page is actually read in (the second of the
+    /// same page and scale) buy one whole-page surface, which the rest copy out of. Every tile
+    /// is exactly its part of the full render either way.
+    #[test]
+    fn repeated_tiles_share_one_surface_but_one_tiny_tile_does_not_buy_one() {
+        let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());
+        let full = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 2.0, tag: 0, ..Default::default() });
+        assert!(full.error.is_none(), "{:?}", full.error);
+        let tiles = [Tile { x: 30, y: 40, w: 50, h: 30 }, Tile { x: 0, y: 0, w: 40, h: 20 }, Tile { x: 120, y: 60, w: 40, h: 30 }];
+        let mut outs = Vec::new();
+        for (i, tile) in tiles.iter().enumerate() {
+            let part = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: Some(*tile), scale: 2.0, tag: 0, ..Default::default() });
+            assert!(part.error.is_none(), "{:?}", part.error);
+            if i == 0 {
+                assert!(r.surfaces.surfaces.is_empty(), "one tiny tile never renders the whole page for it");
+            } else {
+                assert_eq!(r.surfaces.surfaces.len(), 1, "one surface serves the page's tiles");
+            }
+            outs.push(part);
+        }
+        for (tile, part) in tiles.iter().zip(&outs) {
+            assert_eq!((part.width, part.height), (tile.w, tile.h));
+            for y in 0..tile.h {
+                for x in 0..tile.w {
+                    let a = &full.rgba[((((tile.y + y) * full.width) + tile.x + x) * 4) as usize..][..4];
+                    let b = &part.rgba[((y * tile.w + x) * 4) as usize..][..4];
+                    assert_eq!(a, b, "pixel {x},{y} of {tile:?}");
+                }
+            }
+        }
+    }
+
+    /// The surface cache keeps the pages being read in (two at most, 16 MB together) and drops
+    /// the one least recently used: alternating tiles of two pages never re-render for the
+    /// other one's sake.
+    #[test]
+    fn the_surface_cache_keeps_two_pages_and_drops_the_least_recently_used() {
+        let mut r = PageRenderer::new(Arc::new(ONE_PAGE_TWICE.to_vec()), RenderConfig::default());
+        let tile = Tile { x: 0, y: 0, w: 40, h: 20 };
+        let req = |page: usize, scale: f32| RenderRequest { page, kind: RequestKind::Pixels, tile: Some(tile), scale, tag: 0, ..Default::default() };
+        for _ in 0..2 {
+            for (page, scale) in [(0, 2.0), (1, 2.0)] {
+                let out = r.render(req(page, scale));
+                assert!(out.error.is_none(), "{:?}", out.error);
+            }
+        }
+        assert_eq!(r.surfaces.surfaces.len(), 2, "both pages' surfaces are kept");
+        // A third key (page 0 at another scale) builds its surface too and drops the least
+        // recently used: page 0's at scale 2.0, which page 1's look pushed back.
+        for _ in 0..2 {
+            let out = r.render(req(0, 1.5));
+            assert!(out.error.is_none(), "{:?}", out.error);
+        }
+        let keys: Vec<SurfaceKey> = r.surfaces.surfaces.iter().map(|s| s.key).collect();
+        assert_eq!(keys.len(), 2, "the cache stays at two surfaces");
+        assert!(keys.contains(&(0, 1.5f32.to_bits(), false, false)), "{keys:?}");
+        assert!(keys.contains(&(1, 2.0f32.to_bits(), false, false)), "{keys:?}");
+        assert!(!keys.contains(&(0, 2.0f32.to_bits(), false, false)), "{keys:?}");
+        let pixels: u64 = r.surfaces.surfaces.iter().map(|s| u64::from(s.width) * u64::from(s.height)).sum();
+        assert!(pixels <= MAX_SURFACE_PIXELS, "{pixels} pixels of surfaces");
+    }
+
+    /// `tile_from_surface` copies whole rows with one `copy_from_slice` each: a tile inside the
+    /// page matches a per-pixel copy, and columns hanging past the page's right edge and rows
+    /// past its bottom stay zeroed — as does a tile entirely outside. The row slices are still
+    /// bounds-checked (`get`/`get_mut`), so a hostile page's dimensions cannot panic here.
+    #[test]
+    fn tile_from_surface_copies_rows_and_zeroes_off_page_edges() {
+        // A 4×3 page whose pixel (x, y) holds the bytes (x+1, y+1, 7, 255): every pixel unique.
+        let page_bytes: Vec<u8> = (0..3usize).flat_map(|y| (0..4usize).flat_map(move |x| [x as u8 + 1, y as u8 + 1, 7, 255])).collect();
+        let words: Vec<u32> = page_bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        let surface = Surface { key: (0, 0, false, false), width: 4, height: 3, pixels: Pixels::from(words) };
+        fn pixel(bytes: &[u8], x: usize, y: usize) -> &[u8] {
+            &bytes[(y * 4 + x) * 4..][..4]
+        }
+
+        // Fully inside the page: an exact copy, pixel for pixel, of the tile's source rows.
+        let tile = Tile { x: 1, y: 1, w: 2, h: 2 };
+        let (tw, th, out, text) = tile_from_surface(&surface, tile).expect("a 2×2 tile always fits");
+        assert_eq!((tw, th), (2, 2));
+        assert!(text.is_none());
+        for y in 0..2usize {
+            for x in 0..2usize {
+                assert_eq!(&out[(y * 2 + x) * 4..][..4], pixel(&page_bytes, x + 1, y + 1), "pixel {x},{y}");
+            }
+        }
+
+        // Hanging past the page's right and bottom edges: only the on-page part is copied.
+        let tile = Tile { x: 3, y: 2, w: 4, h: 4 };
+        let (_, _, out, _) = tile_from_surface(&surface, tile).expect("a bounded tile always fits");
+        for y in 0..4usize {
+            for x in 0..4usize {
+                if x == 0 && y == 0 {
+                    assert_eq!(&out[(y * 4 + x) * 4..][..4], pixel(&page_bytes, 3, 2), "the on-page pixel is copied");
+                } else {
+                    assert_eq!(&out[(y * 4 + x) * 4..][..4], &[0, 0, 0, 0], "pixel {x},{y} is off the page");
+                }
+            }
+        }
+
+        // Entirely outside the page: nothing to copy.
+        let tile = Tile { x: 9, y: 9, w: 2, h: 2 };
+        let (_, _, out, _) = tile_from_surface(&surface, tile).expect("a bounded tile always fits");
+        assert!(out.iter().all(|&b| b == 0), "a tile past the page's bottom right corner is all zeroes");
+    }
+
     /// White-on-black: the page clears black, the black filled rectangle maps to the text colour,
     /// and the image's pixels are byte-identical to the plain render — photos never pass through
     /// the mapping, not even its white quadrant, which would map to black if they did.
@@ -7722,6 +7931,31 @@ endstream endobj
         };
         assert_eq!(decodes("A"), 1, "a Flate image decodes the same at every size");
         assert_eq!(decodes("B"), 5, "a JPX soft mask decodes for the size it is drawn at");
+    }
+
+    /// A `PageRenderer` decodes the document's images once for its whole life: every render
+    /// builds a cache of its own, but they all share the cache's stores (`PageRenderer` cannot
+    /// keep a cache borrowing its document across `&mut self` renders; the stores borrow
+    /// nothing and are what persists).
+    #[test]
+    fn images_are_decoded_once_across_page_renderer_renders() {
+        let pdf = image_cache_pdf(
+            // The image at two sizes: one decode serves both (patch 32), and one serves both
+            // renders.
+            "q 50 0 0 50 10 10 cm /A Do Q q 40 0 0 40 80 15 cm /A Do Q",
+            "<< /XObject << /A 5 0 R >> >>",
+            &[(ONE_PIXEL_RGB, b"\xff\x00\x00")],
+        );
+        let req = RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0, preview: false };
+        let mut r = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+        let first = r.render(req);
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let decoded = r.decoded_image_decodes();
+        assert!(decoded >= 1, "the image decoded through the stores");
+        let second = r.render(req);
+        assert!(second.error.is_none(), "{:?}", second.error);
+        assert_eq!(second.rgba, first.rgba, "the second render draws the same pixels");
+        assert_eq!(r.decoded_image_decodes(), decoded, "the second render decoded the image again");
     }
 
     // ICC profiles whose stream dictionaries are the same (vendored hayro-interpret patch 48).

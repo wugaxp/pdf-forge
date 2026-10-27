@@ -457,8 +457,11 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                             row(ui, "PDF version", i.pdf_version.clone());
                             row(ui, "Location", crate::bidi::visual(doc.path.as_deref().unwrap_or_default()).into_owned());
                             row(ui, "File size", format!("{} ({})", human_size(i.file_size), crate::panels::byte_count(i.file_size)));
-                            let p = &i.pages[0];
-                            row(ui, "Page size", units.size(f64::from(p.width), f64::from(p.height)));
+                            // The file's own page tree is untrusted: a document that lists no page
+                            // shows the count alone rather than a first page that is not there.
+                            if let Some(p) = i.pages.first() {
+                                row(ui, "Page size", units.size(f64::from(p.width), f64::from(p.height)));
+                            }
                             row(ui, "Number of pages", i.pages.len().to_string());
                             row(ui, "Tagged PDF", yes(i.tagged));
                             row(ui, "Form fields", i.fields.len().to_string());
@@ -1214,7 +1217,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     ui.label(egui::RichText::new(tl!("Recover unsaved documents?")).font(theme::semibold(18.0)));
                 });
                 ui.add_space(6.0);
-                ui.label(tl!("PdfCraft didn't shut down normally. These documents had changes that were autosaved:"));
+                ui.label(tl!("PDF Forge didn't shut down normally. These documents had changes that were autosaved:"));
                 ui.add_space(8.0);
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                 egui::Grid::new("recoverable").num_columns(2).spacing([18.0, 6.0]).show(ui, |ui| {

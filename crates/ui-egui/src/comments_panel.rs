@@ -20,6 +20,12 @@ use crate::{icons, widgets};
 /// Accent bar of the selected card (11-visual-spec §3: `#0165DD`).
 const CARD_ACCENT: Color32 = Color32::from_rgb(0x01, 0x65, 0xDD);
 
+/// Cards drawn before the panel stops and offers more. A document with thousands of comments
+/// would otherwise lay out every card on every frame.
+const CARD_CAP: usize = 60;
+/// Cards the "Show more" button adds.
+const CARD_CHUNK: usize = 120;
+
 /// Reader-friendly names for annotation subtypes (the PDF names are shown in tooltips).
 pub fn subtype_label(s: &str) -> &str {
     match s {
@@ -363,6 +369,30 @@ pub(crate) fn show(
     {
         view.comments.collapsed_pages.retain(|&c| c != p);
     }
+    // Cards drawn since the document changed: the cap, plus the "Show more" presses so far.
+    // A comment selected from elsewhere is always drawn, cap or no cap.
+    if view.comments.shown_for != generation {
+        view.comments.shown_for = generation;
+        view.comments.shown_cards = 0;
+    }
+    let mut cap = if view.comments.shown_cards == 0 { CARD_CAP } else { view.comments.shown_cards };
+    if view.comments.reveal
+        && let Some((p, i)) = view.comments.selected
+        && let Some(at) = rows.rows.iter().position(|row| {
+            let a = &info.annotations[row.at];
+            a.page == p && a.index == i
+        })
+    {
+        // `reveal` is one-shot (the panel takes it to scroll the card into view), so the cap it
+        // buys must persist in `shown_cards`: later frames still draw up to the selected card.
+        let needed = at + 1;
+        if cap < needed {
+            cap = needed;
+            view.comments.shown_cards = needed;
+        }
+    }
+    let mut drawn = 0usize;
+    let mut more = false;
     let mut page = usize::MAX;
     let mut group: Option<&str> = None;
     for row in &rows.rows {
@@ -387,9 +417,12 @@ pub(crate) fn show(
                     let toggle = icons::button(ui, chevron, 18.0, false, if open { tl!("Collapse") } else { tl!("Expand") }).clicked();
                     let label = ui.add(
                         egui::Label::new(
-                            egui::RichText::new(crate::i18n::fmt(tl!("Page {label}"), &[("label", &info.pages[page].label)]))
-                                .font(theme::semibold(12.5))
-                                .color(t.text_muted),
+                            egui::RichText::new(crate::i18n::fmt(
+                                tl!("Page {label}"),
+                                &[("label", info.pages.get(page).map(|p| p.label.as_str()).unwrap_or("?"))],
+                            ))
+                            .font(theme::semibold(12.5))
+                            .color(t.text_muted),
                         )
                         .sense(Sense::click()),
                     );
@@ -411,10 +444,29 @@ pub(crate) fn show(
         if sort == SortBy::Page && view.comments.collapsed_pages.contains(&a.page) {
             continue;
         }
+        if drawn >= cap {
+            more = true;
+            break;
+        }
+        drawn += 1;
         let rotation = info.pages.get(a.page).map_or(0, |p| p.rotation);
         if let Some(e) = card(ui, t, a, rotation, &row.thread, info, view, prefs, allowed, nav) {
             edit = Some(e);
         }
+    }
+    if more {
+        // The cards still to come, so the button says how much a press adds.
+        let rest = rows.rows[drawn..]
+            .iter()
+            .filter(|row| sort != SortBy::Page || !view.comments.collapsed_pages.contains(&info.annotations[row.at].page))
+            .count();
+        ui.add_space(6.0);
+        ui.vertical_centered(|ui| {
+            let n = rest.min(CARD_CHUNK);
+            if widgets::pill_button(ui, &crate::i18n::fmt(tl!("Show {n} more comments"), &[("n", &n.to_string())]), false).clicked() {
+                view.comments.shown_cards = cap + CARD_CHUNK;
+            }
+        });
     }
     edit
 }

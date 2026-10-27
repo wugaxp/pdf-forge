@@ -494,3 +494,25 @@ fn a_stream_labelled_xref_is_encrypted_when_saved() {
     let bytes = write_full(&doc, &SaveOptions { object_streams: false, ..SaveOptions::default() }).unwrap();
     assert!(!bytes.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()), "the labelled stream was written in the clear");
 }
+
+/// The `/Encrypt` name selectors may be indirect references (§7.6.3.1) and are resolved; one
+/// that is present but not a name must fail the document instead of reading as `/Identity`,
+/// which would leave strings and streams in clear.
+#[test]
+fn encrypt_name_entries_follow_references_and_fail_closed() {
+    let original = protect(Algorithm::Aes128, "", "owner", -1);
+    let mut doc = Document::open(Arc::new(original.clone())).unwrap();
+    let encrypt = doc.trailer().reference(b"Encrypt").unwrap();
+
+    // An indirect `/StmF` resolves: the document still authenticates and decrypts.
+    let stdcf = doc.add(Object::name("StdCF"));
+    doc.update_dict(encrypt, |e| e.set(b"StmF".to_vec(), Object::Ref(stdcf))).unwrap();
+    let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
+    assert_eq!(content(&Document::open(Arc::new(saved)).unwrap()), SECRET);
+
+    // A non-name selector fails closed.
+    let mut doc = Document::open(Arc::new(original)).unwrap();
+    doc.update_dict(encrypt, |e| e.set(b"StrF".to_vec(), Object::Int(0))).unwrap();
+    let saved = write_incremental(&doc, &SaveOptions::default()).unwrap();
+    assert!(matches!(Document::open(Arc::new(saved)), Err(CosError::Security(_))));
+}

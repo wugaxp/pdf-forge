@@ -36,12 +36,56 @@ mod discovery_tests;
 #[derive(Debug, Default)]
 pub struct DigestCache {
     map: std::sync::Mutex<HashMap<RangeKey, Vec<u8>>>,
-    /// Signed revisions opened for change classification, by length and fingerprint.
-    revisions: std::sync::Mutex<HashMap<(usize, [u8; 32]), Document>>,
+    /// Signed revisions opened for change classification, kept within a byte budget.
+    revisions: std::sync::Mutex<RevisionCache>,
     /// Candidate identities only: validation still uses current bytes and current trust.
     discovery: std::sync::Mutex<Option<TimestampCandidates>>,
     #[cfg(test)]
     discovery_scans: std::sync::atomic::AtomicUsize,
+}
+
+/// How many bytes of parsed signed revisions [`DigestCache`] may keep. Each entry is a
+/// complete copy of the bytes one signature covers (a large signed document's revision can be
+/// as long as the file itself), so the budget counts bytes, not entries: 256 MiB bounds the
+/// cache on any document while leaving every realistically revisited revision cached.
+const REVISION_CACHE_BUDGET: usize = 256 << 20;
+
+/// The signed revisions of [`DigestCache`], evicting the oldest entry first when the byte
+/// budget runs out: validation visits signatures from the newest revision backwards, so the
+/// least recently inserted one is the least likely to be needed again.
+#[derive(Debug, Default)]
+struct RevisionCache {
+    map: HashMap<(usize, [u8; 32]), Document>,
+    /// Insertion order of the keys still in `map`.
+    order: std::collections::VecDeque<(usize, [u8; 32])>,
+    /// Sum of the entries' revision lengths (the first field of each key).
+    bytes: usize,
+}
+
+impl RevisionCache {
+    fn get(&self, key: &(usize, [u8; 32])) -> Option<Document> {
+        self.map.get(key).cloned()
+    }
+
+    fn remember(&mut self, key: (usize, [u8; 32]), doc: Document) {
+        // A single revision longer than the whole budget is never cached: keeping it would
+        // evict everything else and still exceed the budget.
+        if key.0 > REVISION_CACHE_BUDGET {
+            return;
+        }
+        while self.bytes + key.0 > REVISION_CACHE_BUDGET {
+            let Some(oldest) = self.order.pop_front() else {
+                self.bytes = 0;
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(oldest.0);
+            self.map.remove(&oldest);
+        }
+        if self.map.insert(key, doc).is_none() {
+            self.bytes = self.bytes.saturating_add(key.0);
+            self.order.push_back(key);
+        }
+    }
 }
 
 /// Keep only the most recently visited source/overlay. In particular, this must not retain
@@ -161,15 +205,12 @@ impl DigestCache {
     /// opened with is neither needed again nor kept here (#1808).
     fn revision(&self, doc: &Document, bytes: &[u8], end: usize) -> Option<Document> {
         let key = (end, fingerprint(&bytes[..end]));
-        if let Some(d) = self.revisions.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        if let Some(d) = self.revisions.lock().ok().and_then(|m| m.get(&key)) {
             return Some(d);
         }
         let d = doc.open_with_same_credentials(Arc::new(bytes[..end].to_vec())).ok()?;
         if let Ok(mut m) = self.revisions.lock() {
-            if m.len() > 8 {
-                m.clear();
-            }
-            m.insert(key, d.clone());
+            m.remember(key, d.clone());
         }
         Some(d)
     }

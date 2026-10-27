@@ -118,6 +118,21 @@ fn first_content_ref(doc: &Document) -> ObjRef {
     }
 }
 
+/// The first content stream that is not one of the overlays a redaction adds after the rewrite.
+fn rewritten_content_ref(doc: &Document) -> ObjRef {
+    let page = pdfcraft_model::pages(doc).swap_remove(0);
+    let contents = page.dict.get(b"Contents").cloned().expect("the page has content");
+    let list = match contents {
+        Object::Ref(r) => vec![Object::Ref(r)],
+        Object::Array(a) => a,
+        _ => panic!("the page's content is not a stream reference"),
+    };
+    list.iter()
+        .filter_map(Object::as_ref)
+        .find(|r| doc.get(*r).as_dict().and_then(|d| d.name(b"PCMark")) != Some(b"Wrap"))
+        .expect("the page's content array holds a rewritten stream")
+}
+
 /// A tagged PDF names its page's content stream from the structure tree: the `/MCR`'s `/Stm`
 /// and `/StmOwn` must follow the rewritten stream, or the old one — the removed text still in
 /// its bytes — keeps it in the saved file. The element's descriptions repeat the word too.
@@ -143,7 +158,7 @@ fn a_tagged_mcr_reference_follows_the_rewritten_content_stream() {
         let r = apply(&mut doc, None).unwrap();
         assert!(r.glyphs > 0 && r.tags >= 1, "indirect: {indirect}, {r:?}");
         // The reference follows the rewrite, `drawn` where the page now draws the marked content.
-        let contents = first_content_ref(&doc);
+        let contents = rewritten_content_ref(&doc);
         assert_ne!(contents, ObjRef::new(4, 0), "the page draws a rewritten stream (indirect: {indirect})");
         let mcr = if indirect {
             doc.get(ObjRef::new(8, 0)).as_dict().cloned().unwrap()

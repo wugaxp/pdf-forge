@@ -512,6 +512,11 @@ pub struct CommentView {
     pub hidden_checks: Vec<String>,
     /// How the panel orders comments.
     pub sort: SortBy,
+    /// Cards drawn below the panel's cap (0: the initial cap). The rest follow a
+    /// "Show more" button, so a document with thousands of comments draws a bounded few.
+    pub(crate) shown_cards: usize,
+    /// The edit generation `shown_cards` counts from: it resets when the document changes.
+    pub(crate) shown_for: u64,
     /// Pages whose group is folded in the panel (when sorted by page).
     pub collapsed_pages: Vec<usize>,
     /// Comment Properties was asked for from the panel: (page, index).
@@ -615,12 +620,12 @@ pub(crate) struct PageCx<'a> {
 impl PageCx<'_> {
     fn to_user(&self, p: Pos2) -> [f64; 2] {
         let (vx, vy) = self.xf.screen_to_view(p);
-        let u = self.info.pages[self.page].view_to_user(vx, vy);
+        let u = self.info.pages.get(self.page).map_or([vx, vy], |p| p.view_to_user(vx, vy));
         [u[0] as f64, u[1] as f64]
     }
 
     fn to_screen(&self, p: [f64; 2]) -> Pos2 {
-        let v = self.info.pages[self.page].user_to_view(p[0] as f32, p[1] as f32);
+        let v = self.info.pages.get(self.page).map_or([0.0, 0.0], |page| page.user_to_view(p[0] as f32, p[1] as f32));
         self.xf.norm_to_screen(v[0] / self.xf.pw, v[1] / self.xf.ph)
     }
 

@@ -49,10 +49,10 @@ pub(crate) fn undrawable_message(c: char) -> String {
 pub(crate) fn undrawn_message(n: &pdfcraft_engine::TextNotice) -> String {
     let template = if n.redrawn_elsewhere {
         tl!(
-            "This field's font can't draw “{c}” ({code}), so PdfCraft shows ? in its place. The value is saved, and other PDF viewers redraw the field from it."
+            "This field's font can't draw “{c}” ({code}), so PDF Forge shows ? in its place. The value is saved, and other PDF viewers redraw the field from it."
         )
     } else {
-        tl!("The fonts PdfCraft writes with can't draw “{c}” ({code}), so it shows as ? in every PDF viewer. The text is saved.")
+        tl!("The fonts PDF Forge writes with can't draw “{c}” ({code}), so it shows as ? in every PDF viewer. The text is saved.")
     };
     crate::i18n::fmt(template, &[("c", &n.ch.to_string()), ("code", &format!("U+{:04X}", u32::from(n.ch)))])
 }
@@ -253,16 +253,16 @@ pub fn default_style() -> AddedText {
     AddedText { size: 12.0, ..AddedText::default() }
 }
 
-/// Display-space rect → screen.
+/// Display-space rect → screen. The pages are untrusted: a page past their end is empty.
 fn screen_rect(xf: &PageXform, info: &DocInfo, page: usize, r: [f64; 4]) -> Rect {
-    let ph = info.pages[page].height as f64;
+    let Some(ph) = info.pages.get(page).map(|p| p.height as f64) else { return Rect::NOTHING };
     xf.view_rect([r[0] as f32, (ph - r[3]) as f32, r[2] as f32, (ph - r[1]) as f32])
 }
 
 /// Screen point → display space.
 fn to_display(xf: &PageXform, info: &DocInfo, page: usize, p: Pos2) -> [f64; 2] {
     let (vx, vy) = xf.screen_to_view(p);
-    [vx as f64, info.pages[page].height as f64 - vy as f64]
+    [vx as f64, info.pages.get(page).map_or(0.0, |pg| pg.height as f64) - vy as f64]
 }
 
 fn on_page(added: &[Added], page: usize) -> Vec<(usize, &Added)> {

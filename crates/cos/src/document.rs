@@ -402,6 +402,12 @@ impl std::fmt::Debug for ReadState {
     }
 }
 
+/// How many free object numbers [`Document::allocate_num`] may look at before giving up. A
+/// number space of 4 billion entries cannot be searched to exhaustion, so a run of occupied
+/// numbers this long (far beyond any real document, and the only way probing fails to find a
+/// gap quickly) is answered with an error instead of an endless loop.
+const MAX_ALLOC_PROBES: u32 = 1 << 20;
+
 #[derive(Clone)]
 pub struct Document {
     data: Arc<Vec<u8>>,
@@ -440,6 +446,9 @@ pub struct Document {
     /// The handler and `/Encrypt` object number that saves use, when encryption changed.
     out_security: Option<Arc<pdfcraft_crypt::SecurityHandler>>,
     out_encrypt_num: Option<u32>,
+    /// Set when [`Self::add`] found no free object number; saves refuse such a document
+    /// rather than write references that point nowhere.
+    alloc_error: Option<CosError>,
 }
 
 /// A temporary reader for whole-document work. Its caches never populate the editor or
@@ -569,6 +578,7 @@ impl Document {
             full_save: false,
             out_security: None,
             out_encrypt_num: None,
+            alloc_error: None,
         };
         let mut pages = Dict::new();
         pages.set(b"Type".to_vec(), Object::name("Pages"));
@@ -653,6 +663,7 @@ impl Document {
             full_save: false,
             out_security: None,
             out_encrypt_num: None,
+            alloc_error: None,
         };
         let mut log = Vec::new();
         if headerless {
@@ -721,7 +732,7 @@ impl Document {
             self.trailer.remove(b"Encrypt");
             return Ok(());
         };
-        let params = crate::security::encrypt_dict(self, &dict);
+        let params = crate::security::encrypt_dict(self, &dict)?;
         let id0 = self.first_id();
         let handler = match credentials {
             Credentials::Password(password) => Arc::new(pdfcraft_crypt::SecurityHandler::open(params, &id0, *password).map_err(|e| match e {
@@ -1315,22 +1326,43 @@ impl Document {
     }
 
     /// Add a new indirect object and return its reference.
+    ///
+    /// When no object number is free (see `allocate_num`), the returned reference is the
+    /// free-list head `0 0`, nothing is added, and the error is kept in `alloc_error`:
+    /// saves refuse such a document rather than embed a reference that points nowhere.
     pub fn add(&mut self, obj: impl Into<Object>) -> ObjRef {
-        let r = ObjRef::new(self.allocate_num(), 0);
-        let obj = self.adopt(obj.into());
-        self.overlay.insert(r.num, Slot::Set(0, Arc::new(obj)));
-        r
+        match self.allocate_num() {
+            Ok(num) => {
+                let obj = self.adopt(obj.into());
+                self.overlay.insert(num, Slot::Set(0, Arc::new(obj)));
+                ObjRef::new(num, 0)
+            }
+            Err(e) => {
+                self.alloc_error = Some(e);
+                ObjRef::new(0, 0)
+            }
+        }
+    }
+
+    /// The error from the last [`Self::add`] that found no free object number, if any.
+    pub(crate) fn allocation_error(&self) -> Option<&CosError> {
+        self.alloc_error.as_ref()
     }
 
     /// Find a never-used number, retaining the high-water mark for incremental /Size.
     /// Exhausted hints fall back to gaps without replacing source or overlay objects.
-    fn allocate_num(&mut self) -> u32 {
+    /// Probing is capped ([`MAX_ALLOC_PROBES`]): a document whose number space has filled up
+    /// must fail the allocation instead of circling it forever.
+    fn allocate_num(&mut self) -> Result<u32, CosError> {
         let mut num = if self.next_num == u32::MAX { 1 } else { self.next_num.max(1) };
-        while self.entries.lookup(num, &self.data).is_some() || self.overlay.contains_key(&num) {
+        for _ in 0..MAX_ALLOC_PROBES {
+            if self.entries.lookup(num, &self.data).is_none() && !self.overlay.contains_key(&num) {
+                self.next_num = self.next_num.max(num.saturating_add(1));
+                return Ok(num);
+            }
             num = if num == u32::MAX - 1 { 1 } else { num + 1 };
         }
-        self.next_num = self.next_num.max(num.saturating_add(1));
-        num
+        Err(CosError::Syntax { offset: 0, detail: "no free object number remains: the cross-reference number space is exhausted".into() })
     }
 
     /// Delete an object (its number becomes free with the next generation).
@@ -2841,6 +2873,26 @@ endobj
         assert_eq!(doc.add(Object::Null), ObjRef::new(u32::MAX - 1, 0));
         assert_eq!(doc.add(Object::Null), ObjRef::new(3, 0));
         assert_eq!(doc.add(Object::Null), ObjRef::new(4, 0));
+    }
+
+    /// Free-number probing is capped: a run of occupied numbers longer than
+    /// [`MAX_ALLOC_PROBES`] fails the allocation instead of circling the number space
+    /// forever, the document records the failure, and saves refuse it (nothing was added,
+    /// and no reference may point at the free-list head).
+    #[test]
+    fn allocation_gives_up_after_a_bounded_probe_and_saves_refuse_the_document() {
+        let mut doc = Document::new_empty();
+        // Freed numbers stay occupied for allocation (they hold a generation) without moving
+        // the high-water mark, so a run of them starting at it forces the longest probe.
+        for i in 0..MAX_ALLOC_PROBES + 2 {
+            doc.free(ObjRef::new(3 + i, 0));
+        }
+        assert_eq!(doc.add(Object::Int(1)), ObjRef::new(0, 0), "the free-list head stands in for a reference that points nowhere");
+        assert!(doc.allocation_error().is_some());
+        assert!(crate::write_full(&doc, &crate::SaveOptions::default()).is_err(), "{:?}", doc.allocation_error());
+        assert!(crate::write_incremental(&doc, &crate::SaveOptions::default()).is_err());
+        // Nothing was added: the overlay holds no new object.
+        assert_eq!(*doc.get(ObjRef::new(0, 0)), Object::Null);
     }
 
     #[test]

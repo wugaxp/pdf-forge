@@ -136,6 +136,25 @@ pub(crate) fn date_text_for_pdf(session: &Session) -> Result<String, String> {
     session.today_text_for_pdf(None, Some(lang))
 }
 
+impl PdfCraftApp {
+    /// Today's date and its PDF text (Preferences ▸ Date format), computed at most once an
+    /// hour of the session clock — and again when the format, the date language or the
+    /// interface language changed — instead of on every frame.
+    pub(crate) fn today_stamp(&mut self) -> ((i64, u32, u32), Result<String, String>) {
+        let key = (
+            self.session.now_secs().div_euclid(3600),
+            self.session.date_format().to_string(),
+            self.session.date_language().map(str::to_string),
+            i18n::current().code().to_string(),
+        );
+        if self.today_stamp.as_ref().is_none_or(|(k, _)| *k != key) {
+            let value = (self.session.today(), date_text_for_pdf(&self.session));
+            self.today_stamp = Some((key, value));
+        }
+        self.today_stamp.as_ref().map_or(((1970, 1, 1), Err(String::new())), |(_, v)| v.clone())
+    }
+}
+
 /// The longest author name kept (Preferences ▸ Identity, restored settings).
 pub(crate) const MAX_AUTHOR_CHARS: usize = 200;
 
@@ -625,6 +644,10 @@ pub struct RecentFile {
     pub size: usize,
 }
 
+/// Today's date and its PDF text, plus the hour, format, date language and interface language
+/// they were computed from.
+type TodayStamp = ((i64, String, Option<String>, String), ((i64, u32, u32), Result<String, String>));
+
 pub struct PdfCraftApp {
     pub docking: docking::Workspace,
     pub(crate) pending_panel_reveals: Vec<docking::Panel>,
@@ -836,6 +859,11 @@ pub struct PdfCraftApp {
     pub ocr_batch: Option<std::sync::Arc<std::sync::Mutex<ocr_ui::BatchProgress>>>,
     /// Background jobs (OCR, actions, listing pinned folders) run inline instead (tests).
     pub run_inline: bool,
+    /// Today's date and its PDF text, with the hour of the session clock, format, date
+    /// language and interface language they were computed from: the canvas stamps dates into
+    /// comments and forms every frame, and the formatted text is string work the frame need
+    /// not redo.
+    pub(crate) today_stamp: Option<TodayStamp>,
     /// Action Wizard: the user's actions, the dialog state, the running action and (tests) the
     /// files to use instead of a picker.
     pub custom_actions: Vec<pdfcraft_engine::actions::Action>,
@@ -852,6 +880,8 @@ pub struct PdfCraftApp {
     pub js_console: js_ui::JsConsole,
     pub doc_js: js_ui::DocJsDraft,
     pub a11y: a11y_ui::A11yState,
+    /// An accessibility check running off the UI thread, landing through `poll_a11y`.
+    pub(crate) a11y_job: Option<a11y_ui::A11yJob>,
     pub(crate) tags_state: tags_ui::State,
     /// Rules skipped by hand, for the document they were skipped in.
     pub a11y_skipped: std::collections::HashSet<(DocId, pdfcraft_engine::a11y::Rule)>,
@@ -1213,6 +1243,7 @@ impl PdfCraftApp {
             ocr_run: None,
             ocr_batch: None,
             run_inline: false,
+            today_stamp: None,
             custom_actions: Vec::new(),
             wizard: Default::default(),
             action_run: None,
@@ -1224,6 +1255,7 @@ impl PdfCraftApp {
             js_console: Default::default(),
             doc_js: Default::default(),
             a11y: a11y_ui::A11yState::default(),
+            a11y_job: None,
             tags_state: Default::default(),
             a11y_skipped: Default::default(),
             alt_draft: Default::default(),
@@ -2320,9 +2352,9 @@ impl PdfCraftApp {
             Err(e) => {
                 use pdfcraft_engine::links::BlockedLink;
                 let template = if matches!(e, BlockedLink::MailFile | BlockedLink::MailEncodedWord) {
-                    "{who} in this document tried to open an address PdfCraft won't open: {e}."
+                    "{who} in this document tried to open an address PDF Forge won't open: {e}."
                 } else {
-                    "{who} in this document tried to open an address PdfCraft won't open: {e}. Only web (http, https) and email (mailto) links open from documents."
+                    "{who} in this document tried to open an address PDF Forge won't open: {e}. Only web (http, https) and email (mailto) links open from documents."
                 };
                 self.notify_fmt(template, &[("who", tl!(origin.noun())), ("e", &e.to_string())]);
             }
@@ -3648,6 +3680,7 @@ impl eframe::App for PdfCraftApp {
         }
         self.poll_export();
         self.poll_compare();
+        self.poll_a11y();
         self.poll_redact_search();
         self.auto_ocr_scanned_page();
         self.poll_ocr();

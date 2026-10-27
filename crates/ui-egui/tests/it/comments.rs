@@ -2656,3 +2656,70 @@ fn text_comments_can_save_a_zero_width_default() {
     assert_eq!(restored.comment_prefs.style(CommentTool::TextBox).width, 0.0);
     assert_eq!(restored.comment_prefs.style(CommentTool::Callout).width, 0.0);
 }
+
+/// A one-page document with `n` sticky notes on it.
+fn notes(n: usize) -> Vec<u8> {
+    let mut objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [{}] >>",
+            (0..n).map(|i| format!("{} 0 R", 4 + i)).collect::<Vec<_>>().join(" ")
+        ),
+    ];
+    for i in 0..n {
+        let x = 10 + (i % 10) * 28;
+        let y = 10 + (i / 10) * 18;
+        objs.push(format!("<< /Type /Annot /Subtype /Text /Rect [{x} {y} {} {}] /Contents (Note {i}) >>", x + 20, y + 14));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offs = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offs.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let x = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offs {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+/// A panel of many comments draws a capped few and offers the rest behind "Show more", so a
+/// document with thousands of comments still scrolls and paints its panel per frame.
+#[test]
+fn comments_panel_caps_the_cards_it_draws_and_offers_more() {
+    let mut h = harness_with_bytes(notes(200), |app| {
+        app.right = Some(pdfcraft_ui_egui::RightPanel::Comments);
+    });
+    // The first cap of cards is drawn, then the button for the rest. The button sits below the
+    // fold, so scroll to it and let a frame apply the scroll before pressing.
+    h.get_by_label("Show 120 more comments");
+    h.get_by_label("Show 120 more comments").scroll_to_me();
+    h.run_steps(4);
+    h.get_by_label("Show 120 more comments").click();
+    h.run_steps(4);
+    crate::support::settle(&mut h);
+    // One press drew the next chunk; what is left fits one more press.
+    h.get_by_label("Show 20 more comments").scroll_to_me();
+    h.run_steps(4);
+    h.get_by_label("Show 20 more comments").click();
+    h.run_steps(4);
+    crate::support::settle(&mut h);
+    // Every card is drawn now: no button is left.
+    assert!(h.query_by_label("Show more comments").is_none(), "all 200 cards are drawn");
+    // The selected comment is always drawn, cap or no cap: a comment picked from elsewhere
+    // extends the cap to its place, so the button counts from there. The panel lists the page
+    // top-down (inspect orders annotations by page, then uppermost first), and the fixture's grid
+    // puts Note 100 ninety-first, so the cap grows to 91 cards and 109 are still behind the button.
+    let mut h = harness_with_bytes(notes(200), |app| {
+        app.right = Some(pdfcraft_ui_egui::RightPanel::Comments);
+        app.views[0].comments.selected = Some((0, 100));
+        app.views[0].comments.reveal = true;
+    });
+    h.run_steps(4);
+    assert!(h.state().views[0].comments.selected == Some((0, 100)));
+    h.get_by_label("Show 109 more comments");
+}

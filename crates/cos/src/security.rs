@@ -9,16 +9,32 @@
 
 use pdfcraft_crypt::{EncryptDict, Method, SecurityHandler, StreamKind};
 
-use crate::{Dict, Document, Object, PdfString, Stream};
+use crate::{CosError, Dict, Document, Object, PdfString, Stream};
 
 fn bytes_of(doc: &Document, d: &Dict, key: &[u8]) -> Vec<u8> {
     d.get(key).map(|v| doc.resolve(v)).and_then(|v| v.as_string().map(|s| s.bytes.clone())).unwrap_or_default()
 }
 
 /// Read the handler parameters from an `/Encrypt` dictionary.
-pub(crate) fn encrypt_dict(doc: &Document, d: &Dict) -> EncryptDict {
+///
+/// The name entries (`/Filter`, `/StmF`, `/StrF`, `/EFF`) may be indirect references
+/// (§7.6.3.1); each is resolved before use. One that is present but not a name fails the
+/// document rather than reading as `/Identity` or an absent entry: guessing would leave
+/// strings and streams in clear, so a malformed selector fails closed.
+pub(crate) fn encrypt_dict(doc: &Document, d: &Dict) -> Result<EncryptDict, CosError> {
     let int = |k: &[u8], default: i64| d.get(k).map(|v| doc.resolve(v)).and_then(|v| v.as_int()).unwrap_or(default);
-    let name = |k: &[u8]| d.get(k).and_then(|v| v.as_name()).map(|n| n.to_vec()).unwrap_or_else(|| b"Identity".to_vec());
+    let name = |k: &[u8]| -> Result<Option<Vec<u8>>, CosError> {
+        match d.get(k).map(|v| doc.resolve(v)).as_deref() {
+            None | Some(Object::Null) => Ok(None),
+            Some(Object::Name(n)) => Ok(Some(n.to_vec())),
+            Some(_) => Err(CosError::Security(format!("the /Encrypt /{} entry is not a name", String::from_utf8_lossy(k)))),
+        }
+    };
+    let filter = match d.get(b"Filter").map(|v| doc.resolve(v)).as_deref() {
+        None | Some(Object::Null) => Vec::new(),
+        Some(Object::Name(n)) => n.to_vec(),
+        Some(_) => return Err(CosError::Security("the /Encrypt /Filter entry is not a name".into())),
+    };
     let mut crypt_filters = Vec::new();
     if let Some(cf) = d.get(b"CF").map(|c| doc.resolve(c)).and_then(|c| c.as_dict().cloned()) {
         for (k, v) in cf.iter() {
@@ -49,8 +65,8 @@ pub(crate) fn encrypt_dict(doc: &Document, d: &Dict) -> EncryptDict {
         (4, None) => 128,
         _ => int(b"Length", 40),
     };
-    EncryptDict {
-        filter: d.name(b"Filter").map(|n| n.to_vec()).unwrap_or_default(),
+    Ok(EncryptDict {
+        filter,
         v,
         r: int(b"R", 0),
         length_bits,
@@ -62,10 +78,10 @@ pub(crate) fn encrypt_dict(doc: &Document, d: &Dict) -> EncryptDict {
         p: int(b"P", -1) as i32,
         encrypt_metadata: !matches!(d.get(b"EncryptMetadata"), Some(Object::Bool(false))),
         crypt_filters,
-        stm_f: name(b"StmF"),
-        str_f: name(b"StrF"),
-        ef_f: d.get(b"EFF").and_then(|v| v.as_name()).map(|n| n.to_vec()).unwrap_or_default(),
-    }
+        stm_f: name(b"StmF")?.unwrap_or_else(|| b"Identity".to_vec()),
+        str_f: name(b"StrF")?.unwrap_or_else(|| b"Identity".to_vec()),
+        ef_f: name(b"EFF")?.unwrap_or_default(),
+    })
 }
 
 /// The crypt filter a stream names in its `/Filter` chain (`/Crypt` + `/DecodeParms /Name`).
@@ -242,5 +258,55 @@ mod tests {
         none.set(b"Filter".to_vec(), Object::Array(vec![Object::name("FlateDecode")]));
         assert_eq!(named_crypt_filter(&none), None);
         assert_eq!(named_crypt_filter(&Dict::new()), None);
+    }
+
+    /// `/Filter`, `/StmF`, `/StrF` and `/EFF` may be indirect references, which are resolved.
+    /// A present selector that is not a name must fail the document, not read as `/Identity`
+    /// or as absent (strings and streams would silently stay in clear).
+    #[test]
+    fn encrypt_name_entries_follow_references_and_fail_closed() {
+        let mut doc = Document::new_empty();
+        let stdcf = doc.add(Object::name("StdCF"));
+        let mut d = Dict::new();
+        d.set(b"V".to_vec(), Object::Int(4));
+        d.set(b"R".to_vec(), Object::Int(4));
+        d.set(b"Filter".to_vec(), Object::Ref(doc.add(Object::name("Standard"))));
+        d.set(b"StmF".to_vec(), Object::Ref(stdcf));
+        d.set(b"StrF".to_vec(), Object::name("StdCF"));
+        let read = encrypt_dict(&doc, &d).unwrap();
+        assert_eq!(
+            (read.filter.as_slice(), read.stm_f.as_slice(), read.str_f.as_slice()),
+            (b"Standard".as_slice(), b"StdCF".as_slice(), b"StdCF".as_slice())
+        );
+
+        d.set(b"EFF".to_vec(), Object::Ref(stdcf));
+        assert_eq!(encrypt_dict(&doc, &d).unwrap().ef_f.as_slice(), b"StdCF");
+
+        // A present selector that is not a name fails, whichever entry it is.
+        let mut base = d.clone();
+        base.set(b"EFF".to_vec(), Object::name("StdCF"));
+        for (key, value) in [
+            (b"StmF".as_slice(), Object::Int(0)),
+            (b"StrF".as_slice(), Object::String(PdfString::literal(b"StdCF".to_vec()))),
+            (b"EFF".as_slice(), Object::Dict(Dict::new())),
+            (b"Filter".as_slice(), Object::Ref(doc.add(Object::Int(4)))),
+        ] {
+            let mut d = base.clone();
+            d.set(key.to_vec(), value);
+            assert!(matches!(encrypt_dict(&doc, &d), Err(CosError::Security(_))), "{:?}: not a name", String::from_utf8_lossy(key));
+        }
+
+        // Absent (or null) entries keep their documented defaults: /Identity for the stream
+        // and string selectors, the string filter for embedded files.
+        let mut d = Dict::new();
+        d.set(b"V".to_vec(), Object::Int(4));
+        d.set(b"R".to_vec(), Object::Int(4));
+        d.set(b"Filter".to_vec(), Object::name("Standard"));
+        d.set(b"EFF".to_vec(), Object::Null);
+        let read = encrypt_dict(&doc, &d).unwrap();
+        assert_eq!(
+            (read.stm_f.as_slice(), read.str_f.as_slice(), read.ef_f.as_slice()),
+            (b"Identity".as_slice(), b"Identity".as_slice(), b"".as_slice())
+        );
     }
 }

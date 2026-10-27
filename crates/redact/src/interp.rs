@@ -1423,6 +1423,7 @@ fn xobject(
                     return None;
                 }
                 scope.report.forms_removed += 1;
+                scope.layer_blocks += 1;
                 out.replaced.push(name);
                 out.doomed.push(r);
                 return Some(None);
@@ -1449,6 +1450,7 @@ fn xobject(
                 }
                 Err(_) if scope.mode == Mode::Apply => {
                     scope.report.forms_removed += 1;
+                    scope.layer_blocks += 1;
                     out.replaced.push(name);
                     out.doomed.push(r);
                     return Some(None);
