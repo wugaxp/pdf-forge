@@ -108,6 +108,15 @@ pub enum Align {
     Justify,
 }
 
+/// Which glyph forms Chinese text takes: Simplified (`Hans`) or Traditional (`Hant`). The
+/// interface language picks the default for new text; the choice travels with the item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChineseForm {
+    #[default]
+    Simplified,
+    Traditional,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AddedText {
     /// The text box in display space; its width wraps the text and its top is the first line's
@@ -122,6 +131,8 @@ pub struct AddedText {
     pub align: Align,
     /// Extra space after every character, in points: the PDF's character spacing (`Tc`).
     pub char_spacing: f64,
+    /// Glyph forms for Chinese text.
+    pub chinese: ChineseForm,
 }
 
 impl Default for AddedText {
@@ -136,6 +147,7 @@ impl Default for AddedText {
             color: [0.0; 3],
             align: Align::Left,
             char_spacing: 0.0,
+            chinese: ChineseForm::Simplified,
         }
     }
 }
@@ -432,14 +444,17 @@ fn cjk_flavor(text: &str) -> CjkFlavor {
 
 /// The shaped script `c` takes in a text of `flavor`, or `None` when it is not CJK text (it is
 /// then drawn in the item's standard or shaped non-CJK font).
-fn cjk_script(c: char, flavor: CjkFlavor, serif: bool, bold: bool) -> Option<ShapedScript> {
+fn cjk_script(c: char, flavor: CjkFlavor, chinese: ChineseForm, serif: bool, bold: bool) -> Option<ShapedScript> {
     match flavor {
         CjkFlavor::Japanese if is_kana(c) || is_cjk(c) => Some(ShapedScript::Jpan { serif, bold }),
         CjkFlavor::Korean if is_hangul(c) => Some(ShapedScript::Kore),
         // Han characters in Korean text (hanja) keep the Chinese face: the Korean face need not
         // carry them.
         CjkFlavor::Korean if is_cjk(c) => Some(ShapedScript::Cjk),
-        CjkFlavor::Chinese if is_cjk(c) => Some(ShapedScript::Cjk),
+        CjkFlavor::Chinese if is_cjk(c) => Some(match chinese {
+            ChineseForm::Simplified => ShapedScript::Cjk,
+            ChineseForm::Traditional => ShapedScript::Hant,
+        }),
         _ => None,
     }
 }
@@ -471,7 +486,7 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
     // CJK that the text's face lacks (or every CJK character when there is no face).
     let flavor = cjk_flavor(&t.text);
     let serif = t.family == Family::Times;
-    if let Some(c) = t.text.chars().find(|c| match cjk_script(*c, flavor, serif, t.bold) {
+    if let Some(c) = t.text.chars().find(|c| match cjk_script(*c, flavor, t.chinese, serif, t.bold) {
         Some(ShapedScript::Cjk) => !cjk_has(*c),
         Some(ShapedScript::Hant) => !pdfcraft_fonts::hant_has(*c),
         Some(ShapedScript::Jpan { serif, bold }) => !pdfcraft_fonts::japanese_has(serif, bold, *c),
@@ -507,7 +522,15 @@ fn shaped_by_a_face(t: &AddedText) -> bool {
     let flavor = cjk_flavor(&t.text);
     let serif = t.family == Family::Times;
     let cjk = match flavor {
-        CjkFlavor::Chinese => pdfcraft_fonts::document_chinese_font().is_some() && t.text.chars().any(is_cjk),
+        CjkFlavor::Chinese => {
+            let face = match t.chinese {
+                ChineseForm::Simplified => pdfcraft_fonts::document_chinese_font().is_some(),
+                ChineseForm::Traditional => {
+                    pdfcraft_fonts::document_traditional_chinese_font().is_some() || pdfcraft_fonts::document_chinese_font().is_some()
+                }
+            };
+            face && t.text.chars().any(is_cjk)
+        }
         CjkFlavor::Japanese => {
             pdfcraft_fonts::document_japanese_font_for_style(serif, t.bold).is_some() && t.text.chars().any(|c| is_kana(c) || is_cjk(c))
         }
@@ -577,7 +600,7 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
             let after_hebrew = segments.last().is_some_and(|(kind, _)| *kind == Some(ShapedScript::Hebrew));
             let script = if is_thai(c) {
                 Some(ShapedScript::Thai)
-            } else if let Some(script) = cjk_script(c, flavor, serif, t.bold) {
+            } else if let Some(script) = cjk_script(c, flavor, t.chinese, serif, t.bold) {
                 Some(script)
             } else if is_hebrew(c) || (run_rtl && after_hebrew && !c.is_alphanumeric() && pdfcraft_fonts::hebrew_has(c)) {
                 Some(ShapedScript::Hebrew)
@@ -1029,8 +1052,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
             fonts.set(name.clone().into_bytes(), Object::Dict(font));
             let face_or_new = |has: fn(char) -> bool, face: bool| t.text.chars().any(has) && (face || !existing);
             let japanese = pdfcraft_fonts::document_japanese_font_for_style(t.family == Family::Times, t.bold).is_some();
+            let chinese = match t.chinese {
+                ChineseForm::Simplified => pdfcraft_fonts::document_chinese_font().is_some(),
+                ChineseForm::Traditional => {
+                    pdfcraft_fonts::document_traditional_chinese_font().is_some() || pdfcraft_fonts::document_chinese_font().is_some()
+                }
+            };
             if t.text.chars().any(is_thai)
-                || face_or_new(is_cjk, pdfcraft_fonts::document_chinese_font().is_some())
+                || face_or_new(is_cjk, chinese)
                 || face_or_new(is_kana, japanese)
                 || face_or_new(is_hangul, pdfcraft_fonts::document_korean_font().is_some())
                 || face_or_new(is_arabic, pdfcraft_fonts::document_arabic_font().is_some())
@@ -1124,6 +1153,9 @@ fn params(c: &Content) -> Dict {
             if t.char_spacing != 0.0 {
                 d.set(b"CharSpacing".to_vec(), Object::Real(t.char_spacing));
             }
+            if t.chinese == ChineseForm::Traditional {
+                d.set(b"Chinese".to_vec(), Object::name("Hant"));
+            }
         }
         Content::Image(i) => {
             d.set(b"Kind".to_vec(), Object::name("Image"));
@@ -1169,6 +1201,8 @@ fn parse(doc: &Document, d: &Dict) -> Option<Content> {
                 },
                 // Items written before character spacing have none.
                 char_spacing: d.get(b"CharSpacing").and_then(Object::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0),
+                // Items written before the choice have Simplified forms.
+                chinese: if d.name(b"Chinese") == Some(b"Hant") { ChineseForm::Traditional } else { ChineseForm::Simplified },
             }))
         }
         b"Image" => {
@@ -1284,10 +1318,17 @@ fn validate(c: &Content) -> Result<(), EditError> {
             let serif = t.family == Family::Times;
             match flavor {
                 CjkFlavor::Chinese if t.text.chars().any(is_cjk) => {
-                    if pdfcraft_fonts::document_chinese_font().is_none() {
+                    let traditional = t.chinese == ChineseForm::Traditional;
+                    let have = if traditional {
+                        pdfcraft_fonts::document_traditional_chinese_font().is_some() || pdfcraft_fonts::document_chinese_font().is_some()
+                    } else {
+                        pdfcraft_fonts::document_chinese_font().is_some()
+                    };
+                    if !have {
                         return Err(cjk_error(GlyphError::NoFont, &t.text));
                     }
-                    if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !cjk_has(*c)) {
+                    let drawn = |c: char| if traditional { pdfcraft_fonts::hant_has(c) } else { cjk_has(c) };
+                    if let Some(c) = t.text.chars().find(|c| is_cjk(*c) && !drawn(*c)) {
                         return Err(cjk_error(GlyphError::Missing, &c.to_string()));
                     }
                 }

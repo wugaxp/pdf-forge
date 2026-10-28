@@ -3536,6 +3536,12 @@ impl eframe::App for PdfCraftApp {
         }
         // Chinese wants its own faces before the Japanese ones (one baseline per line).
         let cjk = theme::CjkPreference::for_language(lang.code());
+        // New Chinese text takes the interface language's glyph forms unless the item says
+        // otherwise (a Traditional Chinese interface writes Traditional forms).
+        self.text_style.chinese = match cjk {
+            theme::CjkPreference::TraditionalChinese => pdfcraft_engine::ChineseForm::Traditional,
+            _ => pdfcraft_engine::ChineseForm::Simplified,
+        };
         if !self.styled {
             egui_extras::install_image_loaders(ctx);
             theme::install_fonts_for(ctx, cjk);

@@ -206,6 +206,15 @@ impl CjkPreference {
             _ => Self::Default,
         }
     }
+
+    /// The ISO 15924 code whose faces the interface puts first.
+    fn script(self) -> &'static str {
+        match self {
+            Self::Default => "Jpan",
+            Self::SimplifiedChinese => "Hans",
+            Self::TraditionalChinese => "Hant",
+        }
+    }
 }
 
 /// Install the interface fonts with the CJK fallback order for the UI language (Chinese
@@ -249,7 +258,7 @@ pub const SYSTEM_HANGUL_FALLBACK: &str = "system-hangul-fallback";
 /// `PDFCRAFT_SYSTEM_FONTS=0` leaves them out.
 pub fn installed_font_definitions(cjk: CjkPreference) -> FontDefinitions {
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut))]
-    let mut fonts = font_definitions_for(cjk == CjkPreference::SimplifiedChinese);
+    let mut fonts = font_definitions_for(cjk);
     #[cfg(not(target_arch = "wasm32"))]
     {
         use crate::system_fonts::{Need, fallback};
@@ -294,15 +303,16 @@ pub fn installed_font_definitions(cjk: CjkPreference) -> FontDefinitions {
 /// last fallback in every family. Without craft-fonts there is no Japanese, Chinese, Arabic,
 /// Telugu, Hebrew or Thai face here.
 pub fn font_definitions() -> FontDefinitions {
-    font_definitions_for(false)
+    font_definitions_for(CjkPreference::Default)
 }
 
-/// [`font_definitions`] with the CJK fallback order for the UI language. Simplified Chinese
-/// must come first in Chinese mode: otherwise shared characters render in the Japanese face
-/// while Simplified-only characters (e.g. U+6B22 欢) fall through to the Chinese face, and
-/// the mixed vertical metrics sink them below the line.
-pub fn font_definitions_for(prefer_hans: bool) -> FontDefinitions {
-    font_definitions_for_platform(prefer_hans, current_font_policy_platform())
+/// [`font_definitions`] with the CJK fallback order for the UI language. The language's face
+/// must come first: otherwise shared characters render in the Japanese face while
+/// Simplified-only characters (e.g. U+6B22 欢) fall through to the Chinese face, and the mixed
+/// vertical metrics sink them below the line. Traditional Chinese puts the Hant face before
+/// Japanese and Simplified so shared characters keep Traditional glyph forms.
+pub fn font_definitions_for(cjk: CjkPreference) -> FontDefinitions {
+    font_definitions_for_platform(cjk, current_font_policy_platform())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,7 +367,7 @@ pub(crate) fn on_interface_baseline(mut data: FontData) -> FontData {
     data
 }
 
-fn font_definitions_for_platform(prefer_hans: bool, platform: FontPolicyPlatform) -> FontDefinitions {
+fn font_definitions_for_platform(cjk: CjkPreference, platform: FontPolicyPlatform) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
         let data = FontData::from_static(bytes);
@@ -379,7 +389,7 @@ fn font_definitions_for_platform(prefer_hans: bool, platform: FontPolicyPlatform
     // absent from JetBrains Mono), before egui's defaults or optional system/CJK fallbacks.
     fonts.families.entry(FontFamily::Monospace).or_default().insert(1, "Inter".to_owned());
     // The same static bytes pdfcraft-fonts uses for Japanese/Chinese text in PDFs: one copy, not two.
-    for face in pdfcraft_fonts::ui_cjk_fonts(prefer_hans) {
+    for face in pdfcraft_fonts::ui_cjk_fonts(cjk.script()) {
         let name = face.name();
         // Japanese and Chinese faces have distinct family names, so no collision here.
         if !fonts.font_data.contains_key(&name) {
@@ -637,7 +647,7 @@ mod tests {
                 color_transfer_function: egui::epaint::FontColorTransferFunction::Gamma(0.75),
                 ..TextOptions::default()
             },
-            font_definitions_for_platform(false, platform),
+            font_definitions_for_platform(CjkPreference::Default, platform),
         )
     }
 
@@ -676,8 +686,8 @@ mod tests {
 
     #[test]
     fn windows_hinting_changes_only_the_jetbrains_symmetric_rendering_field() {
-        let baseline = font_definitions_for_platform(false, FontPolicyPlatform::Other);
-        let windows = font_definitions_for_platform(false, FontPolicyPlatform::Windows);
+        let baseline = font_definitions_for_platform(CjkPreference::Default, FontPolicyPlatform::Other);
+        let windows = font_definitions_for_platform(CjkPreference::Default, FontPolicyPlatform::Windows);
 
         assert_eq!(baseline.families, windows.families);
         assert_eq!(baseline.font_data.keys().collect::<Vec<_>>(), windows.font_data.keys().collect::<Vec<_>>());
@@ -705,8 +715,8 @@ mod tests {
             }
         }
         assert_eq!(
-            font_definitions_for(false).font_data["JetBrainsMono"].tweak,
-            font_definitions_for_platform(false, current_font_policy_platform()).font_data["JetBrainsMono"].tweak
+            font_definitions_for(CjkPreference::Default).font_data["JetBrainsMono"].tweak,
+            font_definitions_for_platform(CjkPreference::Default, current_font_policy_platform()).font_data["JetBrainsMono"].tweak
         );
     }
 

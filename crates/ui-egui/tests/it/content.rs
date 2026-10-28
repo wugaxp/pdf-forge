@@ -333,6 +333,19 @@ fn a_picture_on_the_clipboard_is_pasted_onto_the_page() {
 
 /// #125: text no PDF text font can draw stays in the editor with a warning instead of being
 /// written to the page as `?` (or lost).
+/// The interface language picks the Chinese glyph forms new text takes: a Traditional Chinese
+/// interface writes Traditional forms, others Simplified.
+#[test]
+fn a_traditional_chinese_interface_defaults_new_text_to_traditional_forms() {
+    let mut h = harness();
+    h.state_mut().set_option("language", "zh-hant").unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().text_style.chinese, pdfcraft_engine::ChineseForm::Traditional);
+    h.state_mut().set_option("language", "en").unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().text_style.chinese, pdfcraft_engine::ChineseForm::Simplified);
+}
+
 #[test]
 fn text_the_standard_fonts_cant_draw_stays_in_the_editor() {
     let _gpu = gpu();

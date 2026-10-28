@@ -3803,7 +3803,11 @@ fn traditional_chinese_added_text_draws() {
         return;
     }
     let text = AddedText {
-        rect: [72.0, 600.0, 180.0, 700.0], text: "繁體中文的測試文字，包含標點符號。".into(), size: 14.0, ..AddedText::default()
+        rect: [72.0, 600.0, 180.0, 700.0],
+        text: "繁體中文的測試文字，包含標點符號。".into(),
+        size: 14.0,
+        chinese: ChineseForm::Traditional,
+        ..AddedText::default()
     };
     assert_eq!(first_undrawable(&text), None);
     assert!(crate::added::lines(&text).len() > 1, "Traditional Chinese wraps between characters");
@@ -3812,6 +3816,18 @@ fn traditional_chinese_added_text_draws() {
     let doc = reopen(&doc);
     let Content::Text(t) = &list_added(&doc)[0].content else { panic!("expected text") };
     assert_eq!(t.text, text.text, "the logical text is kept for editing");
+    assert_eq!(t.chinese, ChineseForm::Traditional, "the choice travels with the item");
+    // The generated font's descriptor names the face that drew it: the Hant face when the build
+    // input has one (Noto Sans TC), the Hans face otherwise.
+    let page = pdfcraft_model::pages(&doc).swap_remove(0);
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap());
+    let fonts = doc.resolve(res.as_dict().unwrap().get(b"Font").unwrap());
+    let (_, font) = fonts.as_dict().unwrap().iter().find(|(name, _)| name.starts_with(b"PCAr")).expect("a generated Chinese font");
+    let font = doc.resolve(font);
+    let expected = pdfcraft_fonts::document_traditional_chinese_font().or_else(pdfcraft_fonts::document_chinese_font).expect("a Chinese face").family;
+    let desc = doc.resolve(font.as_dict().unwrap().get(b"FontDescriptor").unwrap()).as_dict().unwrap().clone();
+    let family = String::from_utf8_lossy(&desc.get(b"FontFamily").and_then(Object::as_string).unwrap().bytes).into_owned();
+    assert_eq!(family, expected, "the Traditional Chinese text took the {family} face");
     let lines = text::text_lines(&doc, 0).unwrap();
     let all: String = lines.iter().map(|l| l.text.as_str()).collect();
     assert!(all.contains(&text.text), "{all}");

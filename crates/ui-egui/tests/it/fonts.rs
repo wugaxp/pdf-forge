@@ -48,6 +48,32 @@ fn japanese_ui_text_uses_craft_fonts() {
     }
 }
 
+/// Traditional Chinese mode puts the Hant face before the Japanese and Simplified faces, so
+/// shared characters keep Traditional glyph forms (the craft-fonts Noto Sans TC face).
+#[test]
+fn traditional_chinese_ui_text_prefers_the_traditional_face() {
+    let hant: Vec<String> = pdfcraft_fonts::ui_traditional_chinese_fonts().iter().map(|f| f.name()).collect();
+    if hant.is_empty() {
+        eprintln!("skipping traditional_chinese_ui_text_prefers_the_traditional_face: no Hant face bundled");
+        return;
+    }
+    let hans: Vec<String> = pdfcraft_fonts::ui_chinese_fonts().iter().map(|f| f.name()).collect();
+    let defs = theme::font_definitions_for(theme::CjkPreference::TraditionalChinese);
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        let stack = &defs.families[&family];
+        let first_hant = stack.iter().position(|n| hant.contains(n)).expect("a Hant face is a fallback");
+        let first_ja = stack.iter().position(|n| n.starts_with("BIZ UDPGothic")).expect("BIZ UDPGothic is a fallback");
+        assert!(first_hant < first_ja, "{family:?}: {stack:?}");
+        if let Some(first_hans) = stack.iter().position(|n| hans.contains(n)) {
+            assert!(first_hant < first_hans, "{family:?}: {stack:?}");
+        }
+    }
+    let mut fonts = Fonts::new(TextOptions::default(), defs);
+    for id in families() {
+        assert!(fonts.has_glyphs(&id, "繁體中文"), "{id:?} lacks Traditional Chinese");
+    }
+}
+
 /// Built with craft-fonts, Korean text renders with real glyphs (no tofu) in every family, from
 /// the NanumGothic face placed after the app's own fonts.
 #[test]
@@ -98,7 +124,7 @@ fn chinese_ui_text_prefers_the_chinese_face() {
         eprintln!("skipping chinese_ui_text_prefers_the_chinese_face: no Hans face bundled (set CRAFT_FONTS_DIR with a Chinese face to run it)");
         return;
     }
-    let defs = theme::font_definitions_for(true);
+    let defs = theme::font_definitions_for(theme::CjkPreference::SimplifiedChinese);
     let hans: Vec<String> = pdfcraft_fonts::ui_chinese_fonts().iter().map(|f| f.name()).collect();
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         let stack = &defs.families[&family];

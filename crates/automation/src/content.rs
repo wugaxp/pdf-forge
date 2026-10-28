@@ -2,7 +2,7 @@
 //! move/resize/retype/restyle it, delete it. Geometry is in points from the top-left of the
 //! displayed page (y down), like every other tool.
 
-use pdfcraft_engine::{ADDED_CHAR_SPACING_LIMIT, AddedContent, AddedText, Edit, FontFamily, TextAlign};
+use pdfcraft_engine::{ADDED_CHAR_SPACING_LIMIT, AddedContent, AddedText, ChineseForm, Edit, FontFamily, TextAlign};
 use serde_json::{Value, json};
 
 use crate::comments::parse_color;
@@ -67,6 +67,13 @@ fn style(a: &Args, t: &mut AddedText) -> Result<()> {
         }
         t.char_spacing = c;
     }
+    if let Some(f) = a.opt_str("chinese")? {
+        t.chinese = match f.to_ascii_lowercase().as_str() {
+            "hans" | "simplified" => ChineseForm::Simplified,
+            "hant" | "traditional" => ChineseForm::Traditional,
+            other => return Err(bad(format!("unknown chinese {other:?} (hans, hant)"))),
+        };
+    }
     Ok(())
 }
 
@@ -92,6 +99,10 @@ impl Automation {
                         v["bold"] = json!(t.bold);
                         v["italic"] = json!(t.italic);
                         v["char_spacing"] = json!(t.char_spacing);
+                        v["chinese"] = json!(match t.chinese {
+                            ChineseForm::Simplified => "hans",
+                            ChineseForm::Traditional => "hant",
+                        });
                     }
                     AddedContent::Image(_) => v["type"] = json!("image"),
                 }
@@ -171,8 +182,8 @@ impl Automation {
                 if a.get("text").is_some() {
                     return Err(bad("images have no text"));
                 }
-                if ["font", "size", "bold", "italic", "color", "align", "char_spacing"].iter().any(|k| a.get(k).is_some()) {
-                    return Err(bad("font, size, bold, italic, color, align and char_spacing apply to text"));
+                if ["font", "size", "bold", "italic", "color", "align", "char_spacing", "chinese"].iter().any(|k| a.get(k).is_some()) {
+                    return Err(bad("font, size, bold, italic, color, align, char_spacing and chinese apply to text"));
                 }
                 if let Some(deg) = a.opt_int("rotate")? {
                     if deg.rem_euclid(90) != 0 {
